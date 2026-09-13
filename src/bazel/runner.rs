@@ -2,7 +2,7 @@ use crate::bazel::model::{TargetLabel, TargetRule};
 use crate::bazel::query::parse_bazel_query_xml;
 use anyhow::{bail, Context, Result};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use tracing::{debug, info};
 
@@ -12,51 +12,21 @@ pub struct BazelRunner {
 }
 
 impl BazelRunner {
-    pub fn new(bazel_bin: PathBuf, workspace_override: Option<PathBuf>) -> Result<Self> {
-        let workspace_dir = match workspace_override {
-            Some(w) => w,
-            None => Self::detect_workspace_dir(&bazel_bin)?,
+    pub fn new(bazel_bin: PathBuf, workspace_dir: PathBuf) -> Result<Self> {
+        let canonical_ws = if workspace_dir.exists() {
+            std::fs::canonicalize(&workspace_dir)
+                .with_context(|| format!("Failed to canonicalize workspace path {:?}", workspace_dir))?
+        } else {
+            workspace_dir
         };
 
         Ok(Self {
             bazel_bin,
-            workspace_dir,
+            workspace_dir: canonical_ws,
         })
     }
 
-    /// Detect workspace directory via `bazel info workspace` or file system traversal
-    fn detect_workspace_dir(bazel_bin: &Path) -> Result<PathBuf> {
-        // Try invoking `bazel info workspace` first
-        let output = Command::new(bazel_bin)
-            .arg("info")
-            .arg("workspace")
-            .output();
 
-        if let Ok(out) = output {
-            if out.status.success() {
-                let ws_str = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if !ws_str.is_empty() {
-                    return Ok(PathBuf::from(ws_str));
-                }
-            }
-        }
-
-        // Fallback: search parent directories for WORKSPACE / MODULE.bazel
-        let mut curr = std::env::current_dir()?;
-        loop {
-            if curr.join("WORKSPACE").exists()
-                || curr.join("WORKSPACE.bazel").exists()
-                || curr.join("MODULE.bazel").exists()
-            {
-                return Ok(curr);
-            }
-            if !curr.pop() {
-                break;
-            }
-        }
-
-        bail!("Could not detect a Bazel workspace root directory. Please provide --workspace <PATH>.")
-    }
 
     /// Execute `bazel query` with transitive dependency closure and parse XML
     pub fn query_dependencies(

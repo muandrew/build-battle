@@ -7,7 +7,10 @@
 ### Core Goals
 - **IDE & Tooling Interoperability**: Allow developers and IDEs (IntelliJ IDEA, Android Studio, VS Code) to leverage Gradle's rich language server and indexing capabilities without modifying the canonical Bazel build rules in the source tree.
 - **Selective Graph Slicing**: Given one or more target patterns, generate Gradle submodules *only* for the targets requested and intermediate connecting nodes. Direct dependencies outside this selected subgraph are fulfilled via delegated Bazel build outputs (e.g. jars/libraries produced by Bazel).
-- **Overlay Model**: Generates an overlay directory structure in `<output-dir>` mirroring the Bazel workspace package hierarchy. The generated Gradle project structure overlays directly onto the codebase (or into an overlay target directory) rather than using external filesystem symlinks or synthetic absolute path linkages.
+- **Overlay & Isolation Model**: Generates an overlay directory structure in `<output-dir>` mirroring the Bazel workspace package hierarchy.
+- **Flexible Path Modes**:
+  - **Relative Paths (Default)**: References source directories and root workspace relatively from the generated module directory (`../../path/to/src`), making the generated view self-contained and portable.
+  - **Absolute Paths (`-pa`)**: Emits absolute filesystem paths (`/path/to/workspace/...`) when requested.
 - **Reliable Metadata Extraction**: Query the Bazel dependency and rule graph using Bazel's native query engine (`bazel query` / `bazel cquery`) to determine build types, plugins, source sets, resources, dependencies, and toolchain constraints.
 
 ---
@@ -16,11 +19,12 @@
 
 ### Usage Syntax
 ```bash
-gv <output-dir> <target> [additional-targets...] [options]
+gv <bazel-project-root> <output-dir> <target> [additional-targets...] [options]
 ```
 
 ### Positional Arguments
-- `<output-dir>`: Directory where the generated Gradle project view (`settings.gradle.kts`, `build.gradle.kts`, helper tasks, etc.) will be written.
+- `<bazel-project-root>`: Path to the root directory of the Bazel workspace / project containing `WORKSPACE` or `MODULE.bazel`.
+- `<output-dir>`: Directory where the generated Gradle project view will be written.
 - `<target> [additional-targets...]`: One or more Bazel target patterns to include in the Gradle view.
 
 ### Target Pattern Support
@@ -30,11 +34,9 @@ gv <output-dir> <target> [additional-targets...] [options]
 - All targets in package and subpackages: `//package-name/...` or `//package-name:__subpackages__`
 
 ### CLI Options
-- `--workspace <path>`: Path to the Bazel workspace root (defaults to current working directory or nearest directory containing `WORKSPACE` / `MODULE.bazel`).
+- `-op`, `--outputpath`, `--output-path <relative|absolute>`: Path mode for emitted build files (`relative` or `absolute`, defaults to `absolute`).
 - `--bazel-bin <path>`: Path to the Bazel / Bazelisk binary (defaults to `bazel` found in `$PATH`).
-- `--in-place`: Generate `build.gradle.kts` directly into the source packages instead of an isolated overlay (defaults to `false`).
-- `--gradle-version <version>`: Gradle version to configure for the wrapper (defaults to `8.5`+).
-- `--verbose`, `-v`: Enable debug logging and verbose Bazel query output.
+- `-v`, `--verbose`: Enable debug logging and verbose Bazel query output.
 
 ---
 
@@ -74,7 +76,7 @@ Given target dependency graph:
   aaa aab aba abb
 ```
 
-#### Scenario 1: `gv <output-dir> aa aab`
+#### Scenario 1: `gv <workspace-root> aa aab`
 - **Selected ($S$)**: `{aa, aab}`
 - **Active Gradle Modules ($M$)**:
   - `aa`
@@ -83,7 +85,7 @@ Given target dependency graph:
   - `aaa` (consumed by `aa` via Bazel build bridge)
 - **Excluded**: `a`, `ab`, `aba`, `abb`
 
-#### Scenario 2: `gv <output-dir> a abb`
+#### Scenario 2: `gv <workspace-root> a abb`
 - **Selected ($S$)**: `{a, abb}`
 - **Paths from $a$ to $abb$**: $a \to ab \to abb$. Intermediate node $ab$ is promoted.
 - **Active Gradle Modules ($M$)**:
@@ -153,19 +155,19 @@ The generated Gradle directory in `<output-dir>` is structured as an **overlay**
                 └── build.gradle.kts
 ```
 
-When overlayed onto the workspace (or when `<output-dir>` is set to the workspace root or an overlay mount), each `build.gradle.kts` aligns directly with its corresponding `BUILD` file and package sources.
+### Module `build.gradle.kts` Pattern
 
-### Module `build.gradle.kts` Pattern (Overlay)
+#### Default: Relative Path Mode
+When `<output-dir>` is different from `<bazel-project-root>`:
 ```kotlin
 plugins {
     `java-library`
 }
 
-// In an overlay, the package directory itself contains the sources
 sourceSets {
     named("main") {
         java {
-            srcDirs(".")
+            srcDirs(listOf(file("../../../../java/com/example/pkg_a")))
             include("**/*.java")
             exclude("build/**")
         }
@@ -182,12 +184,30 @@ dependencies {
 
 // 3. Task to compile boundary targets via Bazel
 val buildBazelBoundaryAaa by tasks.registering(Exec::class) {
-    workingDir = rootDir
+    workingDir = file("../../../..")
     commandLine("bazel", "build", "//java/com/example/aaa:aaa")
 }
 
 tasks.named("compileJava") {
     dependsOn(buildBazelBoundaryAaa)
+}
+```
+
+#### Absolute Path Mode (`-pa`)
+```kotlin
+sourceSets {
+    named("main") {
+        java {
+            srcDirs(listOf(file("/Users/username/workspace/java/com/example/pkg_a")))
+            include("**/*.java")
+            exclude("build/**")
+        }
+    }
+}
+
+val buildBazelBoundaryAaa by tasks.registering(Exec::class) {
+    workingDir = file("/Users/username/workspace")
+    commandLine("bazel", "build", "//java/com/example/aaa:aaa")
 }
 ```
 
@@ -208,11 +228,12 @@ tasks.named("compileJava") {
 ### 6.2 Test Suites
 1. **Unit Tests**:
    - Target pattern parsing (`//a/b:c`, `a/b:all`, `a/b/...`).
+   - Path relativization and `-pa` absolute path formatting.
    - DAG path search and intermediate node inclusion algorithm.
-   - Bazel query XML/JSON parser.
+   - Bazel query XML parser.
    - Gradle Kotlin DSL code generator.
 2. **Mock / Golden Tests**:
-   - Test against static XML/JSON query dumps from known Bazel graphs.
+   - Test against static XML query dumps from known Bazel graphs.
 3. **End-to-End Integration Tests**:
    - Run `gv` against `.test_fixtures/copybara` outputting to temporary directories.
    - Verify generated Gradle build can run `gradle tasks` and compile classes.
