@@ -1,3 +1,4 @@
+use crate::bazel::config::WorkspaceConfig;
 use crate::bazel::model::RuleKind;
 use crate::graph::SlicedView;
 use anyhow::{Context, Result};
@@ -71,6 +72,7 @@ pub struct GradleGenerator {
     pub workspace_root: PathBuf,
     pub workspace_prefix: PathBuf,
     pub path_absolute: bool,
+    pub config: WorkspaceConfig,
 }
 
 impl GradleGenerator {
@@ -80,11 +82,13 @@ impl GradleGenerator {
         workspace_prefix: PathBuf,
         path_absolute: bool,
     ) -> Self {
+        let config = WorkspaceConfig::detect(&workspace_root);
         Self {
             output_dir,
             workspace_root,
             workspace_prefix,
             path_absolute,
+            config,
         }
     }
 
@@ -96,6 +100,7 @@ impl GradleGenerator {
         self.generate_settings_gradle(sliced)?;
         self.generate_root_build_gradle()?;
         self.generate_gradle_properties()?;
+        self.generate_local_properties()?;
         self.generate_overlay_module_build_gradles(sliced)?;
         self.generate_wrapper()?;
 
@@ -109,143 +114,73 @@ impl GradleGenerator {
         Ok(())
     }
 
-    /// Generate gradle.properties with configured Bazel JDK home if detected (only for Java >= 17)
-    fn generate_gradle_properties(&self) -> Result<()> {
-        let props_path = self.output_dir.join("gradle.properties");
-        if let Some(jdk_home) = Self::detect_bazel_jdk(&self.workspace_root) {
-            if let Some(ver) = Self::get_jdk_major_version(&jdk_home) {
-                if ver >= 17 {
-                    let mut file = File::create(props_path)?;
-                    let jdk_str = jdk_home.to_string_lossy().replace('\\', "/");
-                    writeln!(file, "org.gradle.java.home={jdk_str}")?;
-                }
-            }
+    /// Generate local.properties with sdk.dir if Android SDK is available
+    fn generate_local_properties(&self) -> Result<()> {
+        if let Some(ref sdk_dir) = self.config.android_sdk_dir {
+            let local_props_path = self.output_dir.join("local.properties");
+            let mut file = File::create(local_props_path)?;
+            let sdk_str = sdk_dir.to_string_lossy().replace('\\', "/");
+            writeln!(file, "sdk.dir={sdk_str}")?;
         }
         Ok(())
     }
 
-    fn get_jdk_major_version(jdk_home: &Path) -> Option<u32> {
-        let java_bin = jdk_home.join("bin/java");
-        let mut cmd = std::process::Command::new(java_bin);
-        cmd.arg("-version");
-        if let Ok(output) = cmd.output() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let full = format!("{}\n{}", stdout, stderr);
-            for line in full.lines() {
-                if line.contains("version") {
-                    if let Some(start) = line.find('"') {
-                        let rest = &line[start + 1..];
-                        if let Some(end) = rest.find('"') {
-                            let ver_str = &rest[..end];
-                            let parts: Vec<&str> = ver_str.split('.').collect();
-                            if parts[0] == "1" && parts.len() > 1 {
-                                return parts[1].parse::<u32>().ok();
-                            } else {
-                                return parts[0].parse::<u32>().ok();
-                            }
-                        }
-                    }
-                }
-            }
+    /// Generate gradle.properties with JVM options and Android properties
+    fn generate_gradle_properties(&self) -> Result<()> {
+        let props_path = self.output_dir.join("gradle.properties");
+        let mut file = File::create(props_path)?;
+        writeln!(file, "org.gradle.jvmargs=-Xmx2048m -XX:MaxMetaspaceSize=512m")?;
+        writeln!(file, "android.useAndroidX=true")?;
+        writeln!(file, "android.nonTransitiveRClass=true")?;
+        if !self.config.java_installations.is_empty() {
+            let paths_str = self
+                .config
+                .java_installations
+                .iter()
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .collect::<Vec<_>>()
+                .join(",");
+            writeln!(file, "org.gradle.java.installations.paths={paths_str}")?;
         }
-        None
+        Ok(())
     }
 
-    fn detect_bazel_jdk(workspace_root: &Path) -> Option<PathBuf> {
-        let has_bzlmod = workspace_root.join("MODULE.bazel").exists();
-        let mut cmd = std::process::Command::new("bazel");
-        cmd.current_dir(workspace_root);
-        cmd.arg("cquery");
-        if has_bzlmod {
-            cmd.arg("--enable_bzlmod");
-        }
-        cmd.arg("@rules_java//toolchains:current_java_toolchain");
-        cmd.arg("--output=starlark");
-        cmd.arg("--starlark:expr=getattr([p for k, p in providers(target).items() if 'JavaToolchainInfo' in str(k)][0].java_runtime, 'java_home', None)");
-        cmd.arg("--noshow_progress");
-
-        let java_home_rel = if let Ok(output) = cmd.output() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            stdout
-                .lines()
-                .map(|l| l.trim())
-                .find(|t| t.starts_with("external/") || t.starts_with('/') || t.starts_with('@'))
-                .map(|s| s.to_string())
-        } else {
-            None
-        };
-
-        if let Some(rel) = java_home_rel {
-            if !rel.is_empty() && rel != "None" {
-                let mut info_cmd = std::process::Command::new("bazel");
-                info_cmd.current_dir(workspace_root);
-                info_cmd.arg("info");
-                info_cmd.arg("execution_root");
-                if let Ok(info_out) = info_cmd.output() {
-                    let exec_root = String::from_utf8_lossy(&info_out.stdout).trim().to_string();
-                    let full_path = if rel.starts_with('/') {
-                        PathBuf::from(&rel)
-                    } else if let Some(stripped) = rel.strip_prefix("@@").or_else(|| rel.strip_prefix('@')) {
-                        PathBuf::from(&exec_root).join("external").join(stripped)
-                    } else {
-                        PathBuf::from(&exec_root).join(&rel)
-                    };
-                    if let Some(jdk) = Self::resolve_jdk_home(&full_path) {
-                        return Some(jdk);
-                    }
-                }
-            }
-        }
-
-        let mut info_cmd = std::process::Command::new("bazel");
-        info_cmd.current_dir(workspace_root);
-        info_cmd.arg("info");
-        info_cmd.arg("java-home");
-        if let Ok(info_out) = info_cmd.output() {
-            let jh = String::from_utf8_lossy(&info_out.stdout).trim().to_string();
-            if !jh.is_empty() {
-                let p = PathBuf::from(jh);
-                if let Some(jdk) = Self::resolve_jdk_home(&p) {
-                    return Some(jdk);
-                }
-            }
-        }
-
-        None
-    }
-
-    fn resolve_jdk_home(path: &Path) -> Option<PathBuf> {
-        if path.join("bin/java").exists() {
-            return Some(path.to_path_buf());
-        }
-        if let Ok(entries) = std::fs::read_dir(path) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                let mac_home = p.join("Contents/Home");
-                if mac_home.join("bin/java").exists() {
-                    return Some(mac_home);
-                }
-            }
-        }
-        None
-    }
 
     /// Generate Gradle wrapper files
     fn generate_wrapper(&self) -> Result<()> {
-        let candidates = [
-            "gradle",
-            "/opt/homebrew/bin/gradle",
-            "/usr/local/bin/gradle",
-        ];
-        for cand in candidates {
-            if let Ok(output) = std::process::Command::new(cand)
-                .arg("wrapper")
-                .current_dir(&self.output_dir)
-                .output()
-            {
-                if output.status.success() {
-                    break;
+        let temp_dir = tempfile::tempdir().ok();
+        if let Some(ref tdir) = temp_dir {
+            let _ = std::fs::write(tdir.path().join("settings.gradle.kts"), "rootProject.name = \"wrapper-init\"\n");
+            let candidates = [
+                "gradle",
+                "/opt/homebrew/bin/gradle",
+                "/usr/local/bin/gradle",
+            ];
+            for cand in candidates {
+                match std::process::Command::new(cand)
+                    .arg("wrapper")
+                    .arg("--gradle-version")
+                    .arg("8.5")
+                    .current_dir(tdir.path())
+                    .output()
+                {
+                    Ok(output) => {
+                        if output.status.success() {
+                            let _ = std::fs::copy(tdir.path().join("gradlew"), self.output_dir.join("gradlew"));
+                            let _ = std::fs::copy(tdir.path().join("gradlew.bat"), self.output_dir.join("gradlew.bat"));
+                            let t_wrapper = tdir.path().join("gradle/wrapper");
+                            let out_wrapper = self.output_dir.join("gradle/wrapper");
+                            let _ = std::fs::create_dir_all(&out_wrapper);
+                            let _ = std::fs::copy(t_wrapper.join("gradle-wrapper.jar"), out_wrapper.join("gradle-wrapper.jar"));
+                            let _ = std::fs::copy(t_wrapper.join("gradle-wrapper.properties"), out_wrapper.join("gradle-wrapper.properties"));
+                            break;
+                        } else {
+                            tracing::warn!("gradle wrapper with {} failed: {}", cand, String::from_utf8_lossy(&output.stderr));
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to execute {}: {}", cand, e);
+                    }
                 }
             }
         }
@@ -286,7 +221,25 @@ impl GradleGenerator {
         let settings_path = self.output_dir.join("settings.gradle.kts");
         let mut file = File::create(&settings_path)?;
 
-        writeln!(file, "rootProject.name = \"bazel-gradle-view\"\n")?;
+        writeln!(
+            file,
+            r#"pluginManagement {{
+    repositories {{
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }}
+}}
+dependencyResolutionManagement {{
+    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+    repositories {{
+        google()
+        mavenCentral()
+    }}
+}}
+rootProject.name = "bazel-gradle-view"
+"#
+        )?;
 
         let mut included_projects = std::collections::BTreeSet::new();
         for module_label in &sliced.modules {
@@ -306,23 +259,58 @@ impl GradleGenerator {
         let root_build_path = self.output_dir.join("build.gradle.kts");
         let mut file = File::create(&root_build_path)?;
 
+        let kotlin_ver = &self.config.kotlin_version;
+        let agp_ver = &self.config.agp_version;
+
         writeln!(
             file,
             r#"plugins {{
     base
-    kotlin("jvm") version "1.9.22" apply false
-}}
-
-allprojects {{
-    repositories {{
-        mavenCentral()
-        google()
-    }}
+    kotlin("jvm") version "{kotlin_ver}" apply false
+    kotlin("android") version "{kotlin_ver}" apply false
+    id("com.android.application") version "{agp_ver}" apply false
+    id("com.android.library") version "{agp_ver}" apply false
 }}
 "#
         )?;
 
         Ok(())
+    }
+
+    fn sanitize_and_write_manifest(src_path: &Path, dst_path: &Path, default_pkg: &str) -> std::io::Result<()> {
+        if !src_path.exists() {
+            return Ok(());
+        }
+        let content = std::fs::read_to_string(src_path)?;
+        let pkg = if let Some(p) = content.split("package=\"").nth(1).and_then(|s| s.split('"').next()) {
+            p.to_string()
+        } else {
+            default_pkg.to_string()
+        };
+
+        let mut modified = content;
+        if !pkg.is_empty() {
+            modified = modified.replace("android:name=\".", &format!("android:name=\"{pkg}."));
+        }
+
+        if let Some(start_idx) = modified.find("<manifest") {
+            if let Some(end_idx) = modified[start_idx..].find('>') {
+                let manifest_tag = &modified[start_idx..start_idx + end_idx];
+                if let Some(pkg_start) = manifest_tag.find("package=\"") {
+                    if let Some(pkg_end) = manifest_tag[pkg_start + 9..].find('"') {
+                        let full_pkg_attr = &manifest_tag[pkg_start..pkg_start + 9 + pkg_end + 1];
+                        modified = format!(
+                            "{}{}{}",
+                            &modified[..start_idx + pkg_start],
+                            "",
+                            &modified[start_idx + pkg_start + full_pkg_attr.len()..]
+                        );
+                    }
+                }
+            }
+        }
+
+        std::fs::write(dst_path, modified)
     }
 
     /// Generate build.gradle.kts in each overlay package directory
@@ -346,33 +334,59 @@ allprojects {{
 
             let rule = sliced.target_rules.get(mod_label);
 
-            // 1. Plugins
-            let is_kotlin = rule.map(|r| {
-                matches!(r.kind, RuleKind::KotlinJvmLibrary | RuleKind::KotlinJvmTest)
-                    || r.srcs.iter().any(|s| s.ends_with(".kt"))
-            }).unwrap_or(false);
+            let is_android_app = rule.map(|r| matches!(r.kind, RuleKind::AndroidApplication)).unwrap_or(false);
+            let is_android_lib = rule.map(|r| matches!(r.kind, RuleKind::AndroidLibrary | RuleKind::KotlinAndroidLibrary)).unwrap_or(false);
+            let is_android = rule.map(|r| r.kind.is_android()).unwrap_or(false);
+            let is_kotlin = rule.map(|r| r.kind.is_kotlin() || r.srcs.iter().any(|s| s.ends_with(".kt"))).unwrap_or(false);
             let is_binary = rule.map(|r| matches!(r.kind, RuleKind::JavaBinary)).unwrap_or(false);
+            let has_compose = rule.map(|r| r.has_compose()).unwrap_or(false) || (is_android && self.config.compose_compiler_version.is_some());
 
-            let plugin_str = if is_kotlin {
-                "plugins {\n    `java-library`\n    kotlin(\"jvm\") version \"1.9.22\"\n}"
+            // 1. Plugins
+            let plugin_str = if is_android_app {
+                if is_kotlin {
+                    "plugins {\n    id(\"com.android.application\")\n    kotlin(\"android\")\n}".to_string()
+                } else {
+                    "plugins {\n    id(\"com.android.application\")\n}".to_string()
+                }
+            } else if is_android_lib {
+                if is_kotlin {
+                    "plugins {\n    id(\"com.android.library\")\n    kotlin(\"android\")\n}".to_string()
+                } else {
+                    "plugins {\n    id(\"com.android.library\")\n}".to_string()
+                }
+            } else if is_kotlin {
+                format!("plugins {{\n    `java-library`\n    kotlin(\"jvm\") version \"{}\"\n}}", self.config.kotlin_version)
             } else if is_binary {
-                "plugins {\n    application\n    `java-library`\n}"
+                "plugins {\n    application\n    `java-library`\n}".to_string()
             } else {
-                "plugins {\n    `java-library`\n}"
+                "plugins {\n    `java-library`\n}".to_string()
             };
             writeln!(file, "{plugin_str}\n")?;
 
-            // 2. Overlay source configuration: source dir is package dir in workspace
+            // 2. Source configuration
             let src_dir = if mod_label.package_dir().is_empty() {
                 self.workspace_root.clone()
             } else {
                 self.workspace_root.join(mod_label.package_dir())
             };
 
-            let src_dir_str = if self.path_absolute {
-                src_dir.to_string_lossy().replace('\\', "/")
+            let has_srcs = rule.map(|r| !r.srcs.is_empty()).unwrap_or(true);
+            let effective_src_dir = if let Some(r) = rule {
+                if r.srcs.iter().any(|s| s.starts_with("java/") || s.contains("/java/")) && src_dir.join("java").exists() {
+                    src_dir.join("java")
+                } else if r.srcs.iter().any(|s| s.starts_with("src/main/java/") || s.contains("/src/main/java/")) && src_dir.join("src/main/java").exists() {
+                    src_dir.join("src/main/java")
+                } else {
+                    src_dir.clone()
+                }
             } else {
-                let rel = relative_path(&module_overlay_dir, &src_dir);
+                src_dir.clone()
+            };
+
+            let effective_src_dir_str = if self.path_absolute {
+                effective_src_dir.to_string_lossy().replace('\\', "/")
+            } else {
+                let rel = relative_path(&module_overlay_dir, &effective_src_dir);
                 rel.to_string_lossy().replace('\\', "/")
             };
 
@@ -383,16 +397,24 @@ allprojects {{
                     .iter()
                     .filter_map(|s| {
                         let trimmed = s.trim();
-                        if let Some((pkg, file)) = trimmed.strip_prefix("//").and_then(|t| t.split_once(':')) {
+                        let without_java = if let Some(stripped) = trimmed.strip_prefix("java/") {
+                            stripped
+                        } else if let Some(stripped) = trimmed.strip_prefix("src/main/java/") {
+                            stripped
+                        } else {
+                            trimmed
+                        };
+
+                        if let Some((pkg, file)) = without_java.strip_prefix("//").and_then(|t| t.split_once(':')) {
                             if pkg == mod_label.package_dir() {
                                 Some(file.to_string())
                             } else {
                                 Some(format!("{pkg}/{file}"))
                             }
-                        } else if let Some(stripped) = trimmed.strip_prefix(':') {
+                        } else if let Some(stripped) = without_java.strip_prefix(':') {
                             Some(stripped.to_string())
-                        } else if !trimmed.is_empty() && !trimmed.starts_with('@') {
-                            Some(trimmed.to_string())
+                        } else if !without_java.is_empty() && !without_java.starts_with('@') {
+                            Some(without_java.to_string())
                         } else {
                             None
                         }
@@ -408,18 +430,141 @@ allprojects {{
                 }
             }
 
-            writeln!(
-                file,
-                r#"sourceSets {{
+            if is_android {
+                let default_pkg = if mod_label.package_dir().is_empty() {
+                    "com.example.app".to_string()
+                } else {
+                    mod_label.package_dir().replace('/', ".")
+                };
+
+                let base_ns = rule
+                    .and_then(|r| r.custom_package.as_ref())
+                    .cloned()
+                    .or_else(|| rule.and_then(|r| r.manifest_values.get("applicationId")).cloned())
+                    .unwrap_or(default_pkg);
+
+                let namespace = if is_android_app {
+                    base_ns.clone()
+                } else {
+                    format!("{}.{}", base_ns, mod_label.target_name.replace('-', "_"))
+                };
+
+                let app_id = rule
+                    .and_then(|r| r.manifest_values.get("applicationId"))
+                    .cloned()
+                    .unwrap_or_else(|| base_ns.clone());
+
+                let compile_sdk = self.config.compile_sdk;
+                let min_sdk = self.config.min_sdk;
+                let target_sdk = self.config.target_sdk;
+
+                let compose_block = if has_compose {
+                    let compose_compiler_ver = self.config.compose_compiler_version.as_deref().unwrap_or("1.5.8");
+                    format!(
+                        "    buildFeatures {{\n        compose = true\n    }}\n    composeOptions {{\n        kotlinCompilerExtensionVersion = \"{compose_compiler_ver}\"\n    }}\n"
+                    )
+                } else {
+                    String::new()
+                };
+
+                let manifest_line = if is_android {
+                    if let Some(r) = rule {
+                        if let Some(ref m) = r.manifest {
+                            let m_rel = m.trim_start_matches("//").split_once(':').map(|(_, name)| name).unwrap_or(m.as_str());
+                            let src_manifest = src_dir.join(m_rel);
+                            if src_manifest.exists() {
+                                let overlay_manifest = module_overlay_dir.join("AndroidManifest.xml");
+                                let _ = Self::sanitize_and_write_manifest(&src_manifest, &overlay_manifest, &base_ns);
+                                format!("            manifest.srcFile(file(\"AndroidManifest.xml\"))\n")
+                            } else {
+                                String::new()
+                            }
+                        } else {
+                            String::new()
+                        }
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                };
+
+                let res_line = if src_dir.join("res").exists() || rule.map(|r| !r.resource_files.is_empty()).unwrap_or(false) {
+                    let res_path = src_dir.join("res");
+                    let res_str = if self.path_absolute {
+                        res_path.to_string_lossy().replace('\\', "/")
+                    } else {
+                        let rel = relative_path(&module_overlay_dir, &res_path);
+                        rel.to_string_lossy().replace('\\', "/")
+                    };
+                    format!("            res.srcDirs(listOf(file(\"{res_str}\")))\n")
+                } else {
+                    String::new()
+                };
+
+                let default_config_block = if is_android_app {
+                    format!(
+                        "    defaultConfig {{\n        applicationId = \"{app_id}\"\n        minSdk = {min_sdk}\n        targetSdk = {target_sdk}\n    }}\n"
+                    )
+                } else {
+                    format!("    defaultConfig {{\n        minSdk = {min_sdk}\n    }}\n")
+                };
+
+                let src_dir_line = if has_srcs {
+                    format!("            java.srcDirs(listOf(file(\"{effective_src_dir_str}\")))\n")
+                } else {
+                    String::new()
+                };
+
+                writeln!(
+                    file,
+                    r#"android {{
+    namespace = "{namespace}"
+    compileSdk = {compile_sdk}
+
+{default_config_block}
+    compileOptions {{
+        sourceCompatibility = JavaVersion.VERSION_1_8
+        targetCompatibility = JavaVersion.VERSION_1_8
+    }}
+    lint {{
+        abortOnError = false
+        checkReleaseBuilds = false
+    }}
+
+{compose_block}
+    sourceSets {{
+        named("main") {{
+{manifest_line}{res_line}{src_dir_line}        }}
+    }}
+}}
+"#
+                )?;
+            } else {
+                let java_version = self.config.java_version;
+                let src_dir_line = if has_srcs {
+                    format!("            srcDirs(listOf(file(\"{effective_src_dir_str}\")))\n")
+                } else {
+                    String::new()
+                };
+                writeln!(
+                    file,
+                    r#"java {{
+    toolchain {{
+        languageVersion.set(JavaLanguageVersion.of({java_version}))
+    }}
+}}
+
+sourceSets {{
     named("main") {{
         java {{
-            srcDirs(listOf(file("{src_dir_str}")))
-{include_lines}            exclude("build/**", ".gv/**")
+{src_dir_line}{include_lines}            exclude("build/**", ".gv/**")
         }}
     }}
 }}
 "#
-            )?;
+                )?;
+            }
 
             // 3. Boundary tasks
             let mut seen_boundary = std::collections::HashSet::new();
@@ -432,9 +577,32 @@ allprojects {{
                 rel.to_string_lossy().replace('\\', "/")
             };
 
+            let find_maven_coord = |dep: &crate::bazel::model::TargetLabel| -> Option<String> {
+                self.config.maven_artifacts.get(&dep.target_name)
+                    .or_else(|| self.config.maven_artifacts.get(&dep.raw))
+                    .or_else(|| self.config.maven_artifacts.get(&dep.canonical()))
+                    .cloned()
+            };
+
+            let is_toolchain_target = |dep: &crate::bazel::model::TargetLabel| -> bool {
+                dep.raw.starts_with("@io_bazel_rules_kotlin//")
+                    || dep.raw.starts_with("@build_bazel_rules_android//")
+                    || dep.raw.starts_with("@bazel_tools//")
+                    || dep.raw.starts_with("@androidsdk//")
+                    || dep.raw.starts_with("@local_config_")
+                    || dep.repository.starts_with("@io_bazel_rules_kotlin")
+                    || dep.repository.starts_with("@build_bazel_rules_android")
+                    || dep.repository.starts_with("@bazel_tools")
+                    || dep.repository.starts_with("@androidsdk")
+                    || dep.repository.starts_with("@local_config")
+            };
+
+            let bzlmod_flag = if self.workspace_root.join("MODULE.bazel").exists() { " --enable_bzlmod" } else { "" };
+            let bzlmod_arg = if self.workspace_root.join("MODULE.bazel").exists() { ", \"--enable_bzlmod\"" } else { "" };
+
             if let Some(r) = rule {
-                for dep in &r.deps {
-                    if sliced.boundary_targets.contains(dep) && seen_boundary.insert(dep) {
+                for dep in r.deps.iter().chain(r.exports.iter()) {
+                    if sliced.boundary_targets.contains(dep) && find_maven_coord(dep).is_none() && !is_toolchain_target(dep) && seen_boundary.insert(dep) {
                         let sanitized_boundary = dep.sanitized_name();
                         let canonical_target = dep.canonical();
                         let dep_pkg = dep.package_dir();
@@ -446,7 +614,7 @@ allprojects {{
                             file,
                             r#"val {task_var} by tasks.registering(Exec::class) {{
     workingDir = file("{ws_root_str}")
-    commandLine("sh", "-c", "bazel query 'deps({canonical_target}, 1)' --noshow_progress 2>/dev/null | grep -E '^(@|//)' | xargs bazel build 2>/dev/null || bazel build {canonical_target}")
+    commandLine("sh", "-c", "bazel query{bzlmod_flag} 'deps({canonical_target})' --noshow_progress 2>/dev/null | grep -E '^(@|//)' | xargs bazel build{bzlmod_flag} 2>/dev/null || bazel build{bzlmod_flag} {canonical_target}")
     outputs.file(layout.buildDirectory.file("bazel-outputs/{sanitized_boundary}.jar"))
     doLast {{
         val outDir = layout.buildDirectory.dir("bazel-outputs").get().asFile
@@ -456,7 +624,7 @@ allprojects {{
 
         try {{
             val cqueryExpr = "'\\n'.join([f.path for p in (providers(target).values() if providers(target) else []) if hasattr(p, 'compile_jars') for f in (p.compile_jars.to_list() if hasattr(p.compile_jars, 'to_list') else p.compile_jars)] + [f.path for f in getattr(getattr(target, 'files', None), 'to_list', lambda: [])()])"
-            val proc = ProcessBuilder("bazel", "cquery", "deps({canonical_target}, 1)", "--output=starlark", "--starlark:expr=$cqueryExpr", "--noshow_progress")
+            val proc = ProcessBuilder("bazel", "cquery"{bzlmod_arg}, "deps({canonical_target})", "--output=starlark", "--starlark:expr=$cqueryExpr", "--noshow_progress")
                 .directory(workingDir)
                 .redirectError(ProcessBuilder.Redirect.DISCARD)
                 .start()
@@ -464,7 +632,7 @@ allprojects {{
             proc.waitFor()
             for (line in lines) {{
                 val trimmed = line.trim()
-                if (trimmed.endsWith(".jar")) {{
+                if (trimmed.endsWith(".jar") && !trimmed.endsWith("-sources.jar") && !trimmed.endsWith("d8_compat_dx.jar") && !trimmed.endsWith("platformclasspath.jar") && !trimmed.endsWith("proguard.jar") && !trimmed.endsWith("libr8.jar") && !trimmed.endsWith("android.jar") && !trimmed.endsWith("ImportDepsChecker_deploy.jar") && !trimmed.endsWith("all_android_tools_deploy.jar") && !trimmed.endsWith("apksigner.jar") && !trimmed.endsWith("generate_main_dex_list.jar") && !trimmed.endsWith("libauto_value_plugin.jar") && !trimmed.endsWith("libzip.jar") && !trimmed.endsWith("librules_jvm_external.jar")) {{
                     val f = if (File(trimmed).isAbsolute) File(trimmed) else File(workingDir, trimmed)
                     if (f.exists() && f.length() > 0 && !jarsToMerge.contains(f)) {{
                         jarsToMerge.add(f)
@@ -476,7 +644,7 @@ allprojects {{
         }}
 
         try {{
-            val proc = ProcessBuilder("bazel", "cquery", "deps({canonical_target}, 1)", "--output=files", "--noshow_progress")
+            val proc = ProcessBuilder("bazel", "cquery"{bzlmod_arg}, "deps({canonical_target})", "--output=files", "--noshow_progress")
                 .directory(workingDir)
                 .redirectError(ProcessBuilder.Redirect.DISCARD)
                 .start()
@@ -484,7 +652,7 @@ allprojects {{
             proc.waitFor()
             for (line in lines) {{
                 val trimmed = line.trim()
-                if (trimmed.endsWith(".jar")) {{
+                if (trimmed.endsWith(".jar") && !trimmed.endsWith("-sources.jar") && !trimmed.endsWith("d8_compat_dx.jar") && !trimmed.endsWith("platformclasspath.jar") && !trimmed.endsWith("proguard.jar") && !trimmed.endsWith("libr8.jar") && !trimmed.endsWith("android.jar") && !trimmed.endsWith("ImportDepsChecker_deploy.jar") && !trimmed.endsWith("all_android_tools_deploy.jar") && !trimmed.endsWith("apksigner.jar") && !trimmed.endsWith("generate_main_dex_list.jar") && !trimmed.endsWith("libauto_value_plugin.jar") && !trimmed.endsWith("libzip.jar") && !trimmed.endsWith("librules_jvm_external.jar")) {{
                     val f = if (File(trimmed).isAbsolute) File(trimmed) else File(workingDir, trimmed)
                     if (f.exists() && f.length() > 0 && !jarsToMerge.contains(f)) {{
                         jarsToMerge.add(f)
@@ -542,16 +710,42 @@ allprojects {{
             let mut seen_mod_deps = std::collections::HashSet::new();
 
             if let Some(r) = rule {
+                for exp in &r.exports {
+                    if sliced.modules.contains(exp) && exp != mod_label {
+                        let proj_path = exp.gradle_project_path(&self.workspace_prefix);
+                        if seen_mod_deps.insert(proj_path.clone()) {
+                            writeln!(file, "    api(project(\"{proj_path}\"))")?;
+                        }
+                    } else if let Some(coord) = find_maven_coord(exp) {
+                        if seen_mod_deps.insert(coord.clone()) {
+                            writeln!(file, "    api(\"{coord}\")")?;
+                        }
+                    }
+                }
                 for dep in &r.deps {
                     if sliced.modules.contains(dep) && dep != mod_label {
                         let proj_path = dep.gradle_project_path(&self.workspace_prefix);
                         if seen_mod_deps.insert(proj_path.clone()) {
                             writeln!(file, "    implementation(project(\"{proj_path}\"))")?;
                         }
+                    } else if let Some(coord) = find_maven_coord(dep) {
+                        if seen_mod_deps.insert(coord.clone()) {
+                            writeln!(file, "    implementation(\"{coord}\")")?;
+                        }
                     }
                 }
-                for (_, task_var) in &boundary_task_names {
-                    writeln!(file, "    implementation(files({task_var}))")?;
+                if is_android && has_compose {
+                    if let Some(mat_coord) = self.config.maven_artifacts.get("androidx_compose_material_material") {
+                        if seen_mod_deps.insert(mat_coord.clone()) {
+                            writeln!(file, "    implementation(\"{mat_coord}\")")?;
+                        }
+                    }
+                }
+                for (sanitized_boundary, _) in &boundary_task_names {
+                    writeln!(
+                        file,
+                        "    implementation(files(layout.buildDirectory.file(\"bazel-outputs/{sanitized_boundary}.jar\")))"
+                    )?;
                 }
             }
             writeln!(file, "}}\n")?;
@@ -559,7 +753,7 @@ allprojects {{
             for (_, task_var) in &boundary_task_names {
                 writeln!(
                     file,
-                    "tasks.matching {{ it.name == \"compileJava\" || it.name == \"compileKotlin\" }}.configureEach {{\n    dependsOn({task_var})\n}}\n"
+                    "tasks.matching {{ it.name.contains(\"compile\") || it.name.contains(\"Compile\") || it.name.contains(\"Resources\") || it.name.contains(\"Manifest\") }}.configureEach {{\n    dependsOn({task_var})\n}}\n"
                 )?;
             }
         }
@@ -625,13 +819,18 @@ mod tests {
             TargetRule {
                 label: target_a.clone(),
                 kind: RuleKind::JavaLibrary,
-                srcs: vec![],
+                srcs: vec!["A.java".to_string()],
                 deps: vec![target_b.clone(), boundary.clone()],
                 runtime_deps: vec![],
                 exports: vec![],
                 resources: vec![],
                 javacopts: vec![],
                 main_class: None,
+                manifest: None,
+                custom_package: None,
+                resource_files: vec![],
+                manifest_values: HashMap::new(),
+                plugins: vec![],
             },
         );
         target_rules.insert(
@@ -646,6 +845,11 @@ mod tests {
                 resources: vec![],
                 javacopts: vec![],
                 main_class: None,
+                manifest: None,
+                custom_package: None,
+                resource_files: vec![],
+                manifest_values: HashMap::new(),
+                plugins: vec![],
             },
         );
 

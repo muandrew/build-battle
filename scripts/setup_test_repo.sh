@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-FIXTURES_DIR="${ROOT_DIR}/.test_fixtures"
+FIXTURES_DIR="${ROOT_DIR}/e2e"
 
 mkdir -p "${FIXTURES_DIR}"
 

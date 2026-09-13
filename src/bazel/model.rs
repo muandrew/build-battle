@@ -134,6 +134,9 @@ pub enum RuleKind {
     JavaTest,
     KotlinJvmLibrary,
     KotlinJvmTest,
+    AndroidApplication,
+    AndroidLibrary,
+    KotlinAndroidLibrary,
     ProtoLibrary,
     Other(String),
 }
@@ -141,14 +144,35 @@ pub enum RuleKind {
 impl RuleKind {
     pub fn from_rule_class(class_name: &str) -> Self {
         match class_name {
-            "java_library" | "android_library" => RuleKind::JavaLibrary,
-            "java_binary" | "android_binary" => RuleKind::JavaBinary,
+            "android_binary" => RuleKind::AndroidApplication,
+            "android_library" => RuleKind::AndroidLibrary,
+            "kt_android_library" => RuleKind::KotlinAndroidLibrary,
+            "java_library" => RuleKind::JavaLibrary,
+            "java_binary" => RuleKind::JavaBinary,
             "java_test" | "android_test" | "android_local_test" => RuleKind::JavaTest,
-            "kt_jvm_library" | "kt_android_library" => RuleKind::KotlinJvmLibrary,
+            "kt_jvm_library" => RuleKind::KotlinJvmLibrary,
             "kt_jvm_test" => RuleKind::KotlinJvmTest,
             "proto_library" | "java_proto_library" => RuleKind::ProtoLibrary,
             other => RuleKind::Other(other.to_string()),
         }
+    }
+
+    pub fn is_android(&self) -> bool {
+        matches!(
+            self,
+            RuleKind::AndroidApplication
+                | RuleKind::AndroidLibrary
+                | RuleKind::KotlinAndroidLibrary
+        )
+    }
+
+    pub fn is_kotlin(&self) -> bool {
+        matches!(
+            self,
+            RuleKind::KotlinJvmLibrary
+                | RuleKind::KotlinJvmTest
+                | RuleKind::KotlinAndroidLibrary
+        )
     }
 }
 
@@ -164,6 +188,11 @@ pub struct TargetRule {
     pub resources: Vec<String>,
     pub javacopts: Vec<String>,
     pub main_class: Option<String>,
+    pub manifest: Option<String>,
+    pub custom_package: Option<String>,
+    pub resource_files: Vec<String>,
+    pub manifest_values: std::collections::HashMap<String, String>,
+    pub plugins: Vec<TargetLabel>,
 }
 
 impl TargetRule {
@@ -174,4 +203,10 @@ impl TargetRule {
         all.extend(self.exports.clone());
         all
     }
+
+    pub fn has_compose(&self) -> bool {
+        self.plugins.iter().any(|p| p.raw.contains("compose") || p.target_name.contains("compose"))
+            || self.deps.iter().any(|d| d.raw.contains("compose") || d.target_name.contains("compose"))
+    }
 }
+

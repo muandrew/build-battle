@@ -135,6 +135,11 @@ mod tests {
             resources: vec![],
             javacopts: vec![],
             main_class: None,
+            manifest: None,
+            custom_package: None,
+            resource_files: vec![],
+            manifest_values: HashMap::new(),
+            plugins: vec![],
         };
         (label, rule)
     }

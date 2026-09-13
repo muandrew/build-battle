@@ -221,7 +221,7 @@ val buildBazelBoundaryAaa by tasks.registering(Exec::class) {
 - **Repo URL**: `https://github.com/google/copybara.git`
 - **Isolation Policy**: No Copybara source code is ever committed into this repository.
 - **Fixture Setup Script**: `scripts/setup_test_repo.sh`
-  - Clones or shallow-fetches Copybara into a local `.test_fixtures/copybara` folder (which is added to `.gitignore`).
+  - Clones or shallow-fetches Copybara into a local `e2e/copybara` folder (which is added to `.gitignore`).
   - Provides sample target queries such as:
     - `//java/com/google/copybara:copybara`
     - `//java/com/google/copybara/util:util`
@@ -237,17 +237,17 @@ val buildBazelBoundaryAaa by tasks.registering(Exec::class) {
 2. **Mock / Golden Tests**:
    - Test against static XML query dumps from known Bazel graphs.
 3. **End-to-End Integration Tests**:
-   - Run `gv` against `.test_fixtures/copybara` and `.test_fixtures/examples/android/jetpack-compose`.
+   - Run `gv` against `e2e/copybara` and `e2e/examples/android/jetpack-compose`.
    - Verify generated Gradle build can run `gradle tasks` and compile classes.
 
 ### 6.3 Integration Test Scenarios
 
 ```bash
-gv .test_fixtures/copybara .test_fixtures/gv_copybara //java/com/google/copybara/buildozer
-cd .test_fixtures/gv_copybara
+gv e2e/copybara e2e/gv_copybara //java/com/google/copybara/buildozer
+cd e2e/gv_copybara
 ./gradlew :java:com:google:copybara:buildozer:buildozer:build
 
-gv .test_fixtures/examples/android/jetpack-compose .test_fixtures/gv_android .test_fixtures/examples/android/jetpack-compose/app/src/main:all
-cd .test_fixtures/gv_android
-./gradlew :android:jetpack-compose:app:src:main:app:build
+gv e2e/examples/android/jetpack-compose e2e/gv_android e2e/examples/android/jetpack-compose/app/src/main:all
+cd e2e/gv_android
+./gradlew :android:jetpack-compose:app:src:main:app:assembleDebug
 ```

@@ -174,18 +174,18 @@ mod tests {
     fn test_cli_parsing_2_pos_args_with_path_target() {
         let cli = Cli::try_parse_normalized_from([
             "gv",
-            ".test_fixtures/examples/android/jetpack-compose",
-            ".test_fixtures/examples/android/jetpack-compose/app/src/main:all",
+            "e2e/examples/android/jetpack-compose",
+            "e2e/examples/android/jetpack-compose/app/src/main:all",
         ])
         .unwrap();
         assert_eq!(
             cli.workspace_root,
-            PathBuf::from(".test_fixtures/examples/android/jetpack-compose")
+            PathBuf::from("e2e/examples/android/jetpack-compose")
         );
         assert_eq!(cli.output_dir, None);
         assert_eq!(
             cli.targets,
-            vec![".test_fixtures/examples/android/jetpack-compose/app/src/main:all"]
+            vec!["e2e/examples/android/jetpack-compose/app/src/main:all"]
         );
     }
 
