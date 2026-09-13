@@ -4,18 +4,29 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 FIXTURES_DIR="${ROOT_DIR}/.test_fixtures"
-COPYBARA_DIR="${FIXTURES_DIR}/copybara"
-COPYBARA_REPO="https://github.com/google/copybara.git"
 
 mkdir -p "${FIXTURES_DIR}"
 
-if [ ! -d "${COPYBARA_DIR}/.git" ]; then
-  echo "Cloning google/copybara into ${COPYBARA_DIR}..."
-  git clone --depth 1 "${COPYBARA_REPO}" "${COPYBARA_DIR}"
-else
-  echo "google/copybara test repository already exists at ${COPYBARA_DIR}."
-  echo "Updating to latest master..."
-  git -C "${COPYBARA_DIR}" pull --rebase || true
-fi
+setup_fixture() {
+  local name="$1"
+  local repo_url="$2"
+  local target_dir="${FIXTURES_DIR}/${name}"
 
-echo "Copybara test fixture is ready at ${COPYBARA_DIR}."
+  if [ ! -d "${target_dir}/.git" ]; then
+    echo "Cloning ${name} (${repo_url}) into ${target_dir}..."
+    git clone --depth 1 "${repo_url}" "${target_dir}"
+  else
+    echo "${name} test repository already exists at ${target_dir}."
+    echo "Updating ${name} to latest..."
+    git -C "${target_dir}" pull --rebase || true
+  fi
+
+  echo "Fixture '${name}' is ready at ${target_dir}."
+  echo ""
+}
+
+# Define and setup fixtures
+setup_fixture "copybara" "https://github.com/google/copybara.git"
+setup_fixture "examples" "https://github.com/bazelbuild/examples.git"
+
+echo "All test fixtures are ready in ${FIXTURES_DIR}."

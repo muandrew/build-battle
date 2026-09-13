@@ -28,6 +28,29 @@ fn expand_tilde(path: std::path::PathBuf) -> std::path::PathBuf {
     path
 }
 
+pub fn find_workspace_prefix(workspace_root: &std::path::Path) -> std::path::PathBuf {
+    let canonical = match std::fs::canonicalize(workspace_root) {
+        Ok(c) => c,
+        Err(_) => workspace_root.to_path_buf(),
+    };
+
+    if canonical.join(".git").exists() {
+        return std::path::PathBuf::new();
+    }
+
+    let mut current = canonical.parent();
+    while let Some(parent) = current {
+        if parent.join(".git").exists() {
+            if let Ok(rel) = canonical.strip_prefix(parent) {
+                return rel.to_path_buf();
+            }
+        }
+        current = parent.parent();
+    }
+
+    std::path::PathBuf::new()
+}
+
 fn main() -> Result<()> {
     let args = Cli::parse_normalized();
 
@@ -46,14 +69,21 @@ fn main() -> Result<()> {
         ws_expanded
     };
 
-    let output_dir = expand_tilde(args.output_dir);
+    let raw_output_dir = match args.output_dir {
+        Some(dir) => dir,
+        None => workspace_root.join(".gv"),
+    };
+    let output_dir = expand_tilde(raw_output_dir);
     let is_absolute = match args.output_path {
         cli::PathMode::Absolute => true,
         cli::PathMode::Relative => false,
     };
 
+    let workspace_prefix = find_workspace_prefix(&workspace_root);
+
     info!("Running gv (Gradle View generator)");
     info!("Bazel Workspace Root: {:?}", workspace_root);
+    info!("Workspace Prefix: {:?}", workspace_prefix);
     info!("Output Directory: {:?}", output_dir);
     info!("Requested Targets: {:?}", args.targets);
     info!("Path Mode: {:?}", args.output_path);
@@ -79,7 +109,7 @@ fn main() -> Result<()> {
     );
 
     // 5. Generate Gradle project overlay in output directory
-    let generator = GradleGenerator::new(output_dir, workspace_root, is_absolute);
+    let generator = GradleGenerator::new(output_dir, workspace_root, workspace_prefix, is_absolute);
     generator.generate(&sliced_view)?;
 
     info!("Done!");

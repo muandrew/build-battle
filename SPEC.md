@@ -134,7 +134,7 @@ Given target dependency graph:
 
 ## 5. Generated Gradle Overlay Structure
 
-The generated Gradle directory in `<output-dir>` is structured as an **overlay** mirroring the Bazel package tree:
+The generated Gradle directory in `<output-dir>` is structured as an **overlay** mirroring the Bazel package tree with a subdirectory for each target:
 
 ```
 <output-dir>/
@@ -150,9 +150,11 @@ The generated Gradle directory in `<output-dir>` is structured as an **overlay**
     └── com/
         └── example/
             ├── pkg_a/
-            │   └── build.gradle.kts
+            │   └── pkg_a/
+            │       └── build.gradle.kts
             └── pkg_ab/
-                └── build.gradle.kts
+                └── target_name/
+                    └── build.gradle.kts
 ```
 
 ### Module `build.gradle.kts` Pattern
@@ -228,12 +230,24 @@ val buildBazelBoundaryAaa by tasks.registering(Exec::class) {
 ### 6.2 Test Suites
 1. **Unit Tests**:
    - Target pattern parsing (`//a/b:c`, `a/b:all`, `a/b/...`).
-   - Path relativization and `-pa` absolute path formatting.
+   - Path relativization and `-op` path mode formatting.
    - DAG path search and intermediate node inclusion algorithm.
    - Bazel query XML parser.
    - Gradle Kotlin DSL code generator.
 2. **Mock / Golden Tests**:
    - Test against static XML query dumps from known Bazel graphs.
 3. **End-to-End Integration Tests**:
-   - Run `gv` against `.test_fixtures/copybara` outputting to temporary directories.
+   - Run `gv` against `.test_fixtures/copybara` and `.test_fixtures/examples/android/jetpack-compose`.
    - Verify generated Gradle build can run `gradle tasks` and compile classes.
+
+### 6.3 Integration Test Scenarios
+
+```bash
+gv .test_fixtures/copybara .test_fixtures/gv_copybara //java/com/google/copybara/buildozer
+cd .test_fixtures/gv_copybara
+./gradlew :java:com:google:copybara:buildozer:buildozer:build
+
+gv .test_fixtures/examples/android/jetpack-compose .test_fixtures/gv_android .test_fixtures/examples/android/jetpack-compose/app/src/main:all
+cd .test_fixtures/gv_android
+./gradlew :android:jetpack-compose:app:src:main:app:build
+```

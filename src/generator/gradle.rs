@@ -69,14 +69,21 @@ pub fn relative_path(from: &Path, to: &Path) -> PathBuf {
 pub struct GradleGenerator {
     pub output_dir: PathBuf,
     pub workspace_root: PathBuf,
+    pub workspace_prefix: PathBuf,
     pub path_absolute: bool,
 }
 
 impl GradleGenerator {
-    pub fn new(output_dir: PathBuf, workspace_root: PathBuf, path_absolute: bool) -> Self {
+    pub fn new(
+        output_dir: PathBuf,
+        workspace_root: PathBuf,
+        workspace_prefix: PathBuf,
+        path_absolute: bool,
+    ) -> Self {
         Self {
             output_dir,
             workspace_root,
+            workspace_prefix,
             path_absolute,
         }
     }
@@ -88,6 +95,7 @@ impl GradleGenerator {
 
         self.generate_settings_gradle(sliced)?;
         self.generate_root_build_gradle()?;
+        self.generate_gradle_properties()?;
         self.generate_overlay_module_build_gradles(sliced)?;
         self.generate_wrapper()?;
 
@@ -101,12 +109,146 @@ impl GradleGenerator {
         Ok(())
     }
 
+    /// Generate gradle.properties with configured Bazel JDK home if detected (only for Java >= 17)
+    fn generate_gradle_properties(&self) -> Result<()> {
+        let props_path = self.output_dir.join("gradle.properties");
+        if let Some(jdk_home) = Self::detect_bazel_jdk(&self.workspace_root) {
+            if let Some(ver) = Self::get_jdk_major_version(&jdk_home) {
+                if ver >= 17 {
+                    let mut file = File::create(props_path)?;
+                    let jdk_str = jdk_home.to_string_lossy().replace('\\', "/");
+                    writeln!(file, "org.gradle.java.home={jdk_str}")?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn get_jdk_major_version(jdk_home: &Path) -> Option<u32> {
+        let java_bin = jdk_home.join("bin/java");
+        let mut cmd = std::process::Command::new(java_bin);
+        cmd.arg("-version");
+        if let Ok(output) = cmd.output() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let full = format!("{}\n{}", stdout, stderr);
+            for line in full.lines() {
+                if line.contains("version") {
+                    if let Some(start) = line.find('"') {
+                        let rest = &line[start + 1..];
+                        if let Some(end) = rest.find('"') {
+                            let ver_str = &rest[..end];
+                            let parts: Vec<&str> = ver_str.split('.').collect();
+                            if parts[0] == "1" && parts.len() > 1 {
+                                return parts[1].parse::<u32>().ok();
+                            } else {
+                                return parts[0].parse::<u32>().ok();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn detect_bazel_jdk(workspace_root: &Path) -> Option<PathBuf> {
+        let has_bzlmod = workspace_root.join("MODULE.bazel").exists();
+        let mut cmd = std::process::Command::new("bazel");
+        cmd.current_dir(workspace_root);
+        cmd.arg("cquery");
+        if has_bzlmod {
+            cmd.arg("--enable_bzlmod");
+        }
+        cmd.arg("@rules_java//toolchains:current_java_toolchain");
+        cmd.arg("--output=starlark");
+        cmd.arg("--starlark:expr=getattr([p for k, p in providers(target).items() if 'JavaToolchainInfo' in str(k)][0].java_runtime, 'java_home', None)");
+        cmd.arg("--noshow_progress");
+
+        let java_home_rel = if let Ok(output) = cmd.output() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            stdout
+                .lines()
+                .map(|l| l.trim())
+                .find(|t| t.starts_with("external/") || t.starts_with('/') || t.starts_with('@'))
+                .map(|s| s.to_string())
+        } else {
+            None
+        };
+
+        if let Some(rel) = java_home_rel {
+            if !rel.is_empty() && rel != "None" {
+                let mut info_cmd = std::process::Command::new("bazel");
+                info_cmd.current_dir(workspace_root);
+                info_cmd.arg("info");
+                info_cmd.arg("execution_root");
+                if let Ok(info_out) = info_cmd.output() {
+                    let exec_root = String::from_utf8_lossy(&info_out.stdout).trim().to_string();
+                    let full_path = if rel.starts_with('/') {
+                        PathBuf::from(&rel)
+                    } else if let Some(stripped) = rel.strip_prefix("@@").or_else(|| rel.strip_prefix('@')) {
+                        PathBuf::from(&exec_root).join("external").join(stripped)
+                    } else {
+                        PathBuf::from(&exec_root).join(&rel)
+                    };
+                    if let Some(jdk) = Self::resolve_jdk_home(&full_path) {
+                        return Some(jdk);
+                    }
+                }
+            }
+        }
+
+        let mut info_cmd = std::process::Command::new("bazel");
+        info_cmd.current_dir(workspace_root);
+        info_cmd.arg("info");
+        info_cmd.arg("java-home");
+        if let Ok(info_out) = info_cmd.output() {
+            let jh = String::from_utf8_lossy(&info_out.stdout).trim().to_string();
+            if !jh.is_empty() {
+                let p = PathBuf::from(jh);
+                if let Some(jdk) = Self::resolve_jdk_home(&p) {
+                    return Some(jdk);
+                }
+            }
+        }
+
+        None
+    }
+
+    fn resolve_jdk_home(path: &Path) -> Option<PathBuf> {
+        if path.join("bin/java").exists() {
+            return Some(path.to_path_buf());
+        }
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                let mac_home = p.join("Contents/Home");
+                if mac_home.join("bin/java").exists() {
+                    return Some(mac_home);
+                }
+            }
+        }
+        None
+    }
+
     /// Generate Gradle wrapper files
     fn generate_wrapper(&self) -> Result<()> {
-        let _ = std::process::Command::new("gradle")
-            .arg("wrapper")
-            .current_dir(&self.output_dir)
-            .output();
+        let candidates = [
+            "gradle",
+            "/opt/homebrew/bin/gradle",
+            "/usr/local/bin/gradle",
+        ];
+        for cand in candidates {
+            if let Ok(output) = std::process::Command::new(cand)
+                .arg("wrapper")
+                .current_dir(&self.output_dir)
+                .output()
+            {
+                if output.status.success() {
+                    break;
+                }
+            }
+        }
 
         let wrapper_dir = self.output_dir.join("gradle/wrapper");
         fs::create_dir_all(&wrapper_dir)?;
@@ -123,6 +265,19 @@ impl GradleGenerator {
             )?;
         }
 
+        let gradlew_path = self.output_dir.join("gradlew");
+        if gradlew_path.exists() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(meta) = fs::metadata(&gradlew_path) {
+                    let mut perms = meta.permissions();
+                    perms.set_mode(0o755);
+                    let _ = fs::set_permissions(&gradlew_path, perms);
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -133,8 +288,13 @@ impl GradleGenerator {
 
         writeln!(file, "rootProject.name = \"bazel-gradle-view\"\n")?;
 
+        let mut included_projects = std::collections::BTreeSet::new();
         for module_label in &sliced.modules {
-            let project_path = module_label.gradle_project_path();
+            let project_path = module_label.gradle_project_path(&self.workspace_prefix);
+            included_projects.insert(project_path);
+        }
+
+        for project_path in included_projects {
             writeln!(file, "include(\"{project_path}\")")?;
         }
 
@@ -150,6 +310,7 @@ impl GradleGenerator {
             file,
             r#"plugins {{
     base
+    kotlin("jvm") version "1.9.22" apply false
 }}
 
 allprojects {{
@@ -167,14 +328,11 @@ allprojects {{
     /// Generate build.gradle.kts in each overlay package directory
     fn generate_overlay_module_build_gradles(&self, sliced: &SlicedView) -> Result<()> {
         for mod_label in &sliced.modules {
-            let pkg_overlay_dir = if mod_label.package_dir().is_empty() {
-                self.output_dir.clone()
-            } else {
-                self.output_dir.join(mod_label.package_dir())
-            };
-            fs::create_dir_all(&pkg_overlay_dir)?;
+            let module_rel_dir = mod_label.module_dir(&self.workspace_prefix);
+            let module_overlay_dir = self.output_dir.join(&module_rel_dir);
+            fs::create_dir_all(&module_overlay_dir)?;
 
-            let build_file_path = pkg_overlay_dir.join("build.gradle.kts");
+            let build_file_path = module_overlay_dir.join("build.gradle.kts");
             let mut file = File::create(build_file_path)?;
 
             writeln!(
@@ -189,19 +347,22 @@ allprojects {{
             let rule = sliced.target_rules.get(mod_label);
 
             // 1. Plugins
-            let plugin_str = match rule.map(|r| &r.kind) {
-                Some(RuleKind::JavaBinary) => "plugins {\n    application\n    `java-library`\n}",
-                Some(RuleKind::KotlinJvmLibrary) => {
-                    "plugins {\n    `java-library`\n    kotlin(\"jvm\") version \"1.9.22\"\n}"
-                }
-                Some(RuleKind::KotlinJvmTest) => {
-                    "plugins {\n    `java`\n    kotlin(\"jvm\") version \"1.9.22\"\n}"
-                }
-                _ => "plugins {\n    `java-library`\n}",
+            let is_kotlin = rule.map(|r| {
+                matches!(r.kind, RuleKind::KotlinJvmLibrary | RuleKind::KotlinJvmTest)
+                    || r.srcs.iter().any(|s| s.ends_with(".kt"))
+            }).unwrap_or(false);
+            let is_binary = rule.map(|r| matches!(r.kind, RuleKind::JavaBinary)).unwrap_or(false);
+
+            let plugin_str = if is_kotlin {
+                "plugins {\n    `java-library`\n    kotlin(\"jvm\") version \"1.9.22\"\n}"
+            } else if is_binary {
+                "plugins {\n    application\n    `java-library`\n}"
+            } else {
+                "plugins {\n    `java-library`\n}"
             };
             writeln!(file, "{plugin_str}\n")?;
 
-            // 2. Overlay source configuration: package directory contains the sources
+            // 2. Overlay source configuration: source dir is package dir in workspace
             let src_dir = if mod_label.package_dir().is_empty() {
                 self.workspace_root.clone()
             } else {
@@ -211,9 +372,41 @@ allprojects {{
             let src_dir_str = if self.path_absolute {
                 src_dir.to_string_lossy().replace('\\', "/")
             } else {
-                let rel = relative_path(&pkg_overlay_dir, &src_dir);
+                let rel = relative_path(&module_overlay_dir, &src_dir);
                 rel.to_string_lossy().replace('\\', "/")
             };
+
+            let mut include_lines = String::new();
+            if let Some(r) = rule {
+                let rel_srcs: Vec<String> = r
+                    .srcs
+                    .iter()
+                    .filter_map(|s| {
+                        let trimmed = s.trim();
+                        if let Some((pkg, file)) = trimmed.strip_prefix("//").and_then(|t| t.split_once(':')) {
+                            if pkg == mod_label.package_dir() {
+                                Some(file.to_string())
+                            } else {
+                                Some(format!("{pkg}/{file}"))
+                            }
+                        } else if let Some(stripped) = trimmed.strip_prefix(':') {
+                            Some(stripped.to_string())
+                        } else if !trimmed.is_empty() && !trimmed.starts_with('@') {
+                            Some(trimmed.to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                if !rel_srcs.is_empty() {
+                    let formatted_includes: Vec<String> = rel_srcs
+                        .iter()
+                        .map(|s| format!("                \"{s}\""))
+                        .collect();
+                    include_lines = format!("            include(\n{}\n            )\n", formatted_includes.join(",\n"));
+                }
+            }
 
             writeln!(
                 file,
@@ -221,27 +414,27 @@ allprojects {{
     named("main") {{
         java {{
             srcDirs(listOf(file("{src_dir_str}")))
-            include("**/*.java")
-            exclude("build/**")
+{include_lines}            exclude("build/**", ".gv/**")
         }}
     }}
 }}
 "#
             )?;
 
-            // 3. Generate Bazel boundary build tasks if any dependencies are boundary targets
+            // 3. Boundary tasks
+            let mut seen_boundary = std::collections::HashSet::new();
             let mut boundary_task_names = Vec::new();
 
-            if let Some(r) = rule {
-                let ws_root_str = if self.path_absolute {
-                    self.workspace_root.to_string_lossy().replace('\\', "/")
-                } else {
-                    let rel = relative_path(&pkg_overlay_dir, &self.workspace_root);
-                    rel.to_string_lossy().replace('\\', "/")
-                };
+            let ws_root_str = if self.path_absolute {
+                self.workspace_root.to_string_lossy().replace('\\', "/")
+            } else {
+                let rel = relative_path(&module_overlay_dir, &self.workspace_root);
+                rel.to_string_lossy().replace('\\', "/")
+            };
 
+            if let Some(r) = rule {
                 for dep in &r.deps {
-                    if sliced.boundary_targets.contains(dep) {
+                    if sliced.boundary_targets.contains(dep) && seen_boundary.insert(dep) {
                         let sanitized_boundary = dep.sanitized_name();
                         let canonical_target = dep.canonical();
                         let dep_pkg = dep.package_dir();
@@ -253,32 +446,87 @@ allprojects {{
                             file,
                             r#"val {task_var} by tasks.registering(Exec::class) {{
     workingDir = file("{ws_root_str}")
-    commandLine("bazel", "build", "{canonical_target}")
+    commandLine("sh", "-c", "bazel query 'deps({canonical_target}, 1)' --noshow_progress 2>/dev/null | grep -E '^(@|//)' | xargs bazel build 2>/dev/null || bazel build {canonical_target}")
     outputs.file(layout.buildDirectory.file("bazel-outputs/{sanitized_boundary}.jar"))
     doLast {{
         val outDir = layout.buildDirectory.dir("bazel-outputs").get().asFile
         outDir.mkdirs()
         val dest = File(outDir, "{sanitized_boundary}.jar")
-        val bazelBin = File(workingDir, "bazel-bin")
+        val jarsToMerge = mutableListOf<File>()
+
+        try {{
+            val cqueryExpr = "'\\n'.join([f.path for p in (providers(target).values() if providers(target) else []) if hasattr(p, 'compile_jars') for f in (p.compile_jars.to_list() if hasattr(p.compile_jars, 'to_list') else p.compile_jars)] + [f.path for f in getattr(getattr(target, 'files', None), 'to_list', lambda: [])()])"
+            val proc = ProcessBuilder("bazel", "cquery", "deps({canonical_target}, 1)", "--output=starlark", "--starlark:expr=$cqueryExpr", "--noshow_progress")
+                .directory(workingDir)
+                .redirectError(ProcessBuilder.Redirect.DISCARD)
+                .start()
+            val lines = proc.inputStream.bufferedReader().readLines()
+            proc.waitFor()
+            for (line in lines) {{
+                val trimmed = line.trim()
+                if (trimmed.endsWith(".jar")) {{
+                    val f = if (File(trimmed).isAbsolute) File(trimmed) else File(workingDir, trimmed)
+                    if (f.exists() && f.length() > 0 && !jarsToMerge.contains(f)) {{
+                        jarsToMerge.add(f)
+                    }}
+                }}
+            }}
+        }} catch (e: Exception) {{
+            // Fallback below
+        }}
+
+        try {{
+            val proc = ProcessBuilder("bazel", "cquery", "deps({canonical_target}, 1)", "--output=files", "--noshow_progress")
+                .directory(workingDir)
+                .redirectError(ProcessBuilder.Redirect.DISCARD)
+                .start()
+            val lines = proc.inputStream.bufferedReader().readLines()
+            proc.waitFor()
+            for (line in lines) {{
+                val trimmed = line.trim()
+                if (trimmed.endsWith(".jar")) {{
+                    val f = if (File(trimmed).isAbsolute) File(trimmed) else File(workingDir, trimmed)
+                    if (f.exists() && f.length() > 0 && !jarsToMerge.contains(f)) {{
+                        jarsToMerge.add(f)
+                    }}
+                }}
+            }}
+        }} catch (e: Exception) {{
+            // Fallback below
+        }}
+
+        val bazelBin = File(workingDir, "bazel-bin").canonicalFile
         val pkg = "{dep_pkg}"
         val targetName = "{dep_target_name}"
-
         val directCandidates = listOf(
             File(bazelBin, "$pkg/lib$targetName.jar"),
+            File(bazelBin, "$pkg/lib$targetName-hjar.jar"),
             File(bazelBin, "$pkg/$targetName.jar")
         )
-        val direct = directCandidates.firstOrNull {{ it.exists() }}
-        if (direct != null) {{
-            direct.copyTo(dest, overwrite = true)
-        }} else {{
-            val matches = bazelBin.walkTopDown().filter {{
-                it.isFile && it.extension == "jar" &&
-                (it.name == "lib$targetName.jar" || it.name == "$targetName.jar")
-            }}.toList()
-            if (matches.isNotEmpty()) {{
-                matches.first().copyTo(dest, overwrite = true)
-            }} else if (!dest.exists()) {{
-                dest.createNewFile()
+        for (c in directCandidates) {{
+            if (c.exists() && c.length() > 0 && !jarsToMerge.contains(c)) {{
+                jarsToMerge.add(c)
+            }}
+        }}
+
+        val seenEntries = mutableSetOf<String>()
+        ZipOutputStream(FileOutputStream(dest)).use {{ out ->
+            for (jar in jarsToMerge) {{
+                if (!jar.exists() || jar.length() == 0L) continue
+                try {{
+                    ZipFile(jar).use {{ zf ->
+                        for (entry in zf.entries()) {{
+                            if (entry.isDirectory || (entry.name.startsWith("META-INF/") && !entry.name.startsWith("META-INF/services/"))) continue
+                            if (seenEntries.add(entry.name)) {{
+                                out.putNextEntry(ZipEntry(entry.name))
+                                zf.getInputStream(entry).copyTo(out)
+                                out.closeEntry()
+                            }}
+                        }}
+                    }}
+                }} catch (e: Exception) {{
+                    // Ignore unreadable jar
+                }}
             }}
         }}
     }}
@@ -291,12 +539,15 @@ allprojects {{
 
             // 4. Dependencies
             writeln!(file, "dependencies {{")?;
+            let mut seen_mod_deps = std::collections::HashSet::new();
 
             if let Some(r) = rule {
                 for dep in &r.deps {
-                    if sliced.modules.contains(dep) {
-                        // Project dependency to sibling Gradle module matching package path
-                        writeln!(file, "    implementation(project(\"{}\"))", dep.gradle_project_path())?;
+                    if sliced.modules.contains(dep) && dep != mod_label {
+                        let proj_path = dep.gradle_project_path(&self.workspace_prefix);
+                        if seen_mod_deps.insert(proj_path.clone()) {
+                            writeln!(file, "    implementation(project(\"{proj_path}\"))")?;
+                        }
                     }
                 }
                 for (_, task_var) in &boundary_task_names {
@@ -308,7 +559,7 @@ allprojects {{
             for (_, task_var) in &boundary_task_names {
                 writeln!(
                     file,
-                    "tasks.named(\"compileJava\") {{\n    dependsOn({task_var})\n}}\n"
+                    "tasks.matching {{ it.name == \"compileJava\" || it.name == \"compileKotlin\" }}.configureEach {{\n    dependsOn({task_var})\n}}\n"
                 )?;
             }
         }
@@ -408,6 +659,7 @@ mod tests {
         let gen_rel = GradleGenerator::new(
             out_dir_rel.path().to_path_buf(),
             ws_dir.path().to_path_buf(),
+            PathBuf::new(),
             false,
         );
         gen_rel.generate(&sliced).unwrap();
@@ -415,7 +667,7 @@ mod tests {
         let pkg_a_build_rel = fs::read_to_string(
             out_dir_rel
                 .path()
-                .join("java/com/example/pkg_a/build.gradle.kts"),
+                .join("java/com/example/pkg_a/pkg_a/build.gradle.kts"),
         )
         .unwrap();
         assert!(pkg_a_build_rel.contains("srcDirs(listOf(file("));
@@ -426,6 +678,7 @@ mod tests {
         let gen_abs = GradleGenerator::new(
             out_dir_abs.path().to_path_buf(),
             ws_dir.path().to_path_buf(),
+            PathBuf::new(),
             true,
         );
         gen_abs.generate(&sliced).unwrap();
@@ -433,7 +686,7 @@ mod tests {
         let pkg_a_build_abs = fs::read_to_string(
             out_dir_abs
                 .path()
-                .join("java/com/example/pkg_a/build.gradle.kts"),
+                .join("java/com/example/pkg_a/pkg_a/build.gradle.kts"),
         )
         .unwrap();
         assert!(pkg_a_build_abs.contains(&ws_dir.path().to_string_lossy().to_string()));
