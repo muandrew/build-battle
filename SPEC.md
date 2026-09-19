@@ -222,7 +222,7 @@ val buildBazelBoundaryAaa by tasks.registering(Exec::class) {
 ### 6.1 Reference Project: `google/copybara`
 - **Repo URL**: `https://github.com/google/copybara.git`
 - **Isolation Policy**: No Copybara source code is ever committed into this repository.
-- **Fixture Setup Script**: `scripts/setup_test_repo.sh`
+- **Fixture Setup Script**: `bin/setup_test_repo.sh`
   - Clones or shallow-fetches Copybara into a local `e2e/copybara` folder (which is added to `.gitignore`).
   - Provides sample target queries such as:
     - `//java/com/google/copybara:copybara`
@@ -244,11 +244,36 @@ val buildBazelBoundaryAaa by tasks.registering(Exec::class) {
 
 ### 6.3 Integration Test Scenarios
 
+- **Test Runner**: `bin/gv_run_tests.sh`
+  - Calls `bin/gv_setup_tests.sh` to clone/update fixture repos.
+  - Builds `gv` via `cargo build`.
+  - **Default mode**: runs `gv` to generate Gradle views.
+  - **Verify mode (`--verify`)**: also runs the Gradle builds to verify generated views compile.
+
+```bash
+# Generate all views (default)
+./bin/gv_run_tests.sh
+
+# Generate + verify all views with gradle builds
+./bin/gv_run_tests.sh --verify
+
+# Run a specific test
+./bin/gv_run_tests.sh copybara_buildozer
+./bin/gv_run_tests.sh --verify android_jetpack_compose
+
+# List available tests
+./bin/gv_run_tests.sh --help
+```
+
+#### Test: `copybara_buildozer`
 ```bash
 gv e2e/copybara e2e/gv_copybara //java/com/google/copybara/buildozer
 cd e2e/gv_copybara
 ./gradlew :java:com:google:copybara:buildozer:buildozer:build
+```
 
+#### Test: `android_jetpack_compose`
+```bash
 gv e2e/examples/android/jetpack-compose e2e/gv_android e2e/examples/android/jetpack-compose/app/src/main:all
 cd e2e/gv_android
 ./gradlew :android:jetpack-compose:app:src:main:app:assembleDebug
