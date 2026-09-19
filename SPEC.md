@@ -222,7 +222,7 @@ val buildBazelBoundaryAaa by tasks.registering(Exec::class) {
 ### 6.1 Reference Project: `google/copybara`
 - **Repo URL**: `https://github.com/google/copybara.git`
 - **Isolation Policy**: No Copybara source code is ever committed into this repository.
-- **Fixture Setup Script**: `scripts/setup_test_repo.sh`
+- **Fixture Setup Script**: `bin/setup_test_repo.sh`
   - Clones or shallow-fetches Copybara into a local `e2e/copybara` folder (which is added to `.gitignore`).
   - Provides sample target queries such as:
     - `//java/com/google/copybara:copybara`
@@ -245,6 +245,10 @@ val buildBazelBoundaryAaa by tasks.registering(Exec::class) {
 ### 6.3 Integration Test Scenarios
 
 ```bash
+./bin/gv_run_tests.sh
+
+// put inside ./bin/gv_run_tests.sh, call ./bin/gv_setup_tests.sh first
+
 gv e2e/copybara e2e/gv_copybara //java/com/google/copybara/buildozer
 cd e2e/gv_copybara
 ./gradlew :java:com:google:copybara:buildozer:buildozer:build

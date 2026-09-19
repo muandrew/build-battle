@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 FIXTURES_DIR="${ROOT_DIR}/e2e"
+gv=./${ROOTDIR}/target/debug/gv
 
 mkdir -p "${FIXTURES_DIR}"
 
@@ -28,5 +29,8 @@ setup_fixture() {
 # Define and setup fixtures
 setup_fixture "copybara" "https://github.com/google/copybara.git"
 setup_fixture "examples" "https://github.com/bazelbuild/examples.git"
+
+${gv} e2e/copybara e2e/gv_copybara //java/com/google/copybara/buildozer
+${gv} e2e/examples/android/jetpack-compose e2e/gv_android e2e/examples/android/jetpack-compose/app/src/main:all
 
 echo "All test fixtures are ready in ${FIXTURES_DIR}."
