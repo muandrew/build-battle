@@ -7,6 +7,10 @@ use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use tracing::info;
 
+const GRADLEW_SH: &[u8] = include_bytes!("../assets/wrapper/gradlew");
+const GRADLEW_BAT: &[u8] = include_bytes!("../assets/wrapper/gradlew.bat");
+const GRADLE_WRAPPER_JAR: &[u8] = include_bytes!("../assets/wrapper/gradle-wrapper.jar");
+
 pub fn normalize_path(path: &Path) -> PathBuf {
     let mut components = Vec::new();
     for component in path.components() {
@@ -101,7 +105,7 @@ impl GradleGenerator {
             .with_context(|| format!("Failed to create output dir {:?}", self.output_dir))?;
 
         self.generate_settings_gradle(sliced)?;
-        self.generate_root_build_gradle()?;
+        self.generate_root_build_gradle(sliced)?;
         self.generate_gradle_properties()?;
         self.generate_local_properties()?;
         self.generate_overlay_module_build_gradles(sliced)?;
@@ -149,73 +153,44 @@ impl GradleGenerator {
     }
 
 
-    /// Generate Gradle wrapper files
+    /// Generate Gradle wrapper files directly without requiring an installed gradle binary
     fn generate_wrapper(&self) -> Result<()> {
-        let temp_dir = tempfile::tempdir().ok();
-        if let Some(ref tdir) = temp_dir {
-            let _ = std::fs::write(tdir.path().join("settings.gradle.kts"), "rootProject.name = \"wrapper-init\"\n");
-            let candidates = [
-                "gradle",
-                "/opt/homebrew/bin/gradle",
-                "/usr/local/bin/gradle",
-            ];
-            for cand in candidates {
-                match std::process::Command::new(cand)
-                    .arg("wrapper")
-                    .arg("--gradle-version")
-                    .arg(&self.gradle_version)
-                    .current_dir(tdir.path())
-                    .output()
-                {
-                    Ok(output) => {
-                        if output.status.success() {
-                            let _ = std::fs::copy(tdir.path().join("gradlew"), self.output_dir.join("gradlew"));
-                            let _ = std::fs::copy(tdir.path().join("gradlew.bat"), self.output_dir.join("gradlew.bat"));
-                            let t_wrapper = tdir.path().join("gradle/wrapper");
-                            let out_wrapper = self.output_dir.join("gradle/wrapper");
-                            let _ = std::fs::create_dir_all(&out_wrapper);
-                            let _ = std::fs::copy(t_wrapper.join("gradle-wrapper.jar"), out_wrapper.join("gradle-wrapper.jar"));
-                            let _ = std::fs::copy(t_wrapper.join("gradle-wrapper.properties"), out_wrapper.join("gradle-wrapper.properties"));
-                            break;
-                        } else {
-                            tracing::warn!("gradle wrapper with {} failed: {}", cand, String::from_utf8_lossy(&output.stderr));
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to execute {}: {}", cand, e);
-                    }
-                }
+        let gradlew_path = self.output_dir.join("gradlew");
+        fs::write(&gradlew_path, GRADLEW_SH)
+            .with_context(|| format!("Failed to write gradlew to {:?}", gradlew_path))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = fs::metadata(&gradlew_path) {
+                let mut perms = meta.permissions();
+                perms.set_mode(0o755);
+                let _ = fs::set_permissions(&gradlew_path, perms);
             }
         }
+
+        let gradlew_bat_path = self.output_dir.join("gradlew.bat");
+        fs::write(&gradlew_bat_path, GRADLEW_BAT)
+            .with_context(|| format!("Failed to write gradlew.bat to {:?}", gradlew_bat_path))?;
 
         let wrapper_dir = self.output_dir.join("gradle/wrapper");
-        fs::create_dir_all(&wrapper_dir)?;
-        let props_path = wrapper_dir.join("gradle-wrapper.properties");
-        if !props_path.exists() {
-            let gradle_ver = &self.gradle_version;
-            let mut file = File::create(props_path)?;
-            writeln!(
-                file,
-                "distributionBase=GRADLE_USER_HOME\n\
-                 distributionPath=wrapper/dists\n\
-                 distributionUrl=https\\://services.gradle.org/distributions/gradle-{gradle_ver}-bin.zip\n\
-                 zipStoreBase=GRADLE_USER_HOME\n\
-                 zipStorePath=wrapper/dists"
-            )?;
-        }
+        fs::create_dir_all(&wrapper_dir)
+            .with_context(|| format!("Failed to create wrapper dir {:?}", wrapper_dir))?;
 
-        let gradlew_path = self.output_dir.join("gradlew");
-        if gradlew_path.exists() {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                if let Ok(meta) = fs::metadata(&gradlew_path) {
-                    let mut perms = meta.permissions();
-                    perms.set_mode(0o755);
-                    let _ = fs::set_permissions(&gradlew_path, perms);
-                }
-            }
-        }
+        let jar_path = wrapper_dir.join("gradle-wrapper.jar");
+        fs::write(&jar_path, GRADLE_WRAPPER_JAR)
+            .with_context(|| format!("Failed to write gradle-wrapper.jar to {:?}", jar_path))?;
+
+        let resolved_gradle_ver = crate::bazel::compat::resolve_highest_gradle_version(&self.gradle_version);
+        let props_path = wrapper_dir.join("gradle-wrapper.properties");
+        let mut file = File::create(props_path)?;
+        writeln!(
+            file,
+            "distributionBase=GRADLE_USER_HOME\n\
+             distributionPath=wrapper/dists\n\
+             distributionUrl=https\\://services.gradle.org/distributions/gradle-{resolved_gradle_ver}-bin.zip\n\
+             zipStoreBase=GRADLE_USER_HOME\n\
+             zipStorePath=wrapper/dists"
+        )?;
 
         Ok(())
     }
@@ -259,24 +234,30 @@ rootProject.name = "bazel-gradle-view"
     }
 
     /// Generate root build.gradle.kts
-    fn generate_root_build_gradle(&self) -> Result<()> {
+    fn generate_root_build_gradle(&self, sliced: &SlicedView) -> Result<()> {
         let root_build_path = self.output_dir.join("build.gradle.kts");
         let mut file = File::create(&root_build_path)?;
 
         let kotlin_ver = &self.config.kotlin_version;
         let agp_ver = &self.config.agp_version;
+        let is_agp_9_plus = crate::bazel::compat::version_cmp(agp_ver, "9.0.0") != std::cmp::Ordering::Less;
 
-        writeln!(
-            file,
-            r#"plugins {{
-    base
-    kotlin("jvm") version "{kotlin_ver}" apply false
-    kotlin("android") version "{kotlin_ver}" apply false
-    id("com.android.application") version "{agp_ver}" apply false
-    id("com.android.library") version "{agp_ver}" apply false
-}}
-"#
-        )?;
+        let any_compose = sliced.modules.iter().any(|mod_label| {
+            sliced.target_rules.get(mod_label).map(|r| r.has_compose() || (r.kind.is_android() && self.config.compose_compiler_version.is_some())).unwrap_or(false)
+        });
+
+        writeln!(file, "plugins {{")?;
+        writeln!(file, "    base")?;
+        writeln!(file, "    kotlin(\"jvm\") version \"{kotlin_ver}\" apply false")?;
+        if !is_agp_9_plus {
+            writeln!(file, "    kotlin(\"android\") version \"{kotlin_ver}\" apply false")?;
+        }
+        writeln!(file, "    id(\"com.android.application\") version \"{agp_ver}\" apply false")?;
+        writeln!(file, "    id(\"com.android.library\") version \"{agp_ver}\" apply false")?;
+        if is_agp_9_plus && any_compose {
+            writeln!(file, "    id(\"org.jetbrains.kotlin.plugin.compose\") version \"2.2.10\" apply false")?;
+        }
+        writeln!(file, "}}\n")?;
 
         Ok(())
     }
@@ -297,6 +278,7 @@ rootProject.name = "bazel-gradle-view"
             modified = modified.replace("android:name=\".", &format!("android:name=\"{pkg}."));
         }
 
+        // 1. Strip package="..." attribute from <manifest> tag
         if let Some(start_idx) = modified.find("<manifest") {
             if let Some(end_idx) = modified[start_idx..].find('>') {
                 let manifest_tag = &modified[start_idx..start_idx + end_idx];
@@ -310,6 +292,61 @@ rootProject.name = "bazel-gradle-view"
                             &modified[start_idx + pkg_start + full_pkg_attr.len()..]
                         );
                     }
+                }
+            }
+        }
+
+        // 2. Remove <uses-sdk ... /> or <uses-sdk ...>...</uses-sdk> (AGP 9.0+ requires sdk versions in build.gradle.kts)
+        while let Some(start_idx) = modified.find("<uses-sdk") {
+            if let Some(close_idx) = modified[start_idx..].find("/>") {
+                modified.replace_range(start_idx..start_idx + close_idx + 2, "");
+            } else if let Some(close_idx) = modified[start_idx..].find("</uses-sdk>") {
+                modified.replace_range(start_idx..start_idx + close_idx + "</uses-sdk>".len(), "");
+            } else {
+                break;
+            }
+        }
+
+        // 3. Ensure components with <intent-filter> have android:exported="true" (required by Android 12+)
+        for tag in ["<activity", "<service", "<receiver"] {
+            let mut search_pos = 0;
+            while let Some(idx) = modified[search_pos..].find(tag) {
+                let actual_idx = search_pos + idx;
+                let end_tag = match tag {
+                    "<activity" => "</activity>",
+                    "<service" => "</service>",
+                    "<receiver" => "</receiver>",
+                    _ => "",
+                };
+                
+                let remaining = &modified[actual_idx..];
+                let tag_header_end = match remaining.find('>') {
+                    Some(p) => p,
+                    None => break,
+                };
+                let header = &remaining[..tag_header_end];
+                
+                if header.ends_with('/') {
+                    // Self-closing component cannot have child <intent-filter>
+                    search_pos = actual_idx + tag_header_end + 1;
+                    continue;
+                }
+                
+                let element_end = match remaining.find(end_tag) {
+                    Some(p) => p + end_tag.len(),
+                    None => {
+                        search_pos = actual_idx + tag_header_end + 1;
+                        continue;
+                    }
+                };
+                
+                let full_element = &remaining[..element_end];
+                if full_element.contains("<intent-filter") && !header.contains("android:exported") {
+                    let insert_pos = actual_idx + tag.len();
+                    modified.insert_str(insert_pos, " android:exported=\"true\"");
+                    search_pos = actual_idx + element_end + " android:exported=\"true\"".len();
+                } else {
+                    search_pos = actual_idx + element_end;
                 }
             }
         }
@@ -344,20 +381,29 @@ rootProject.name = "bazel-gradle-view"
             let is_kotlin = rule.map(|r| r.kind.is_kotlin() || r.srcs.iter().any(|s| s.ends_with(".kt"))).unwrap_or(false);
             let is_binary = rule.map(|r| matches!(r.kind, RuleKind::JavaBinary)).unwrap_or(false);
             let has_compose = rule.map(|r| r.has_compose()).unwrap_or(false) || (is_android && self.config.compose_compiler_version.is_some());
+            let is_agp_9_plus = crate::bazel::compat::version_cmp(&self.config.agp_version, "9.0.0") != std::cmp::Ordering::Less;
 
             // 1. Plugins
             let plugin_str = if is_android_app {
-                if is_kotlin {
-                    "plugins {\n    id(\"com.android.application\")\n    kotlin(\"android\")\n}".to_string()
-                } else {
-                    "plugins {\n    id(\"com.android.application\")\n}".to_string()
+                let mut plugins = vec!["    id(\"com.android.application\")".to_string()];
+                if is_agp_9_plus {
+                    if has_compose {
+                        plugins.push("    id(\"org.jetbrains.kotlin.plugin.compose\")".to_string());
+                    }
+                } else if is_kotlin {
+                    plugins.push("    kotlin(\"android\")".to_string());
                 }
+                format!("plugins {{\n{}\n}}", plugins.join("\n"))
             } else if is_android_lib {
-                if is_kotlin {
-                    "plugins {\n    id(\"com.android.library\")\n    kotlin(\"android\")\n}".to_string()
-                } else {
-                    "plugins {\n    id(\"com.android.library\")\n}".to_string()
+                let mut plugins = vec!["    id(\"com.android.library\")".to_string()];
+                if is_agp_9_plus {
+                    if has_compose {
+                        plugins.push("    id(\"org.jetbrains.kotlin.plugin.compose\")".to_string());
+                    }
+                } else if is_kotlin {
+                    plugins.push("    kotlin(\"android\")".to_string());
                 }
+                format!("plugins {{\n{}\n}}", plugins.join("\n"))
             } else if is_kotlin {
                 format!("plugins {{\n    `java-library`\n    kotlin(\"jvm\") version \"{}\"\n}}", self.config.kotlin_version)
             } else if is_binary {
@@ -376,9 +422,20 @@ rootProject.name = "bazel-gradle-view"
 
             let has_srcs = rule.map(|r| !r.srcs.is_empty()).unwrap_or(true);
             let effective_src_dir = if let Some(r) = rule {
-                if r.srcs.iter().any(|s| s.starts_with("java/") || s.contains("/java/")) && src_dir.join("java").exists() {
+                let has_java_src = r.srcs.iter().any(|s| {
+                    s.starts_with("java/")
+                        || s.contains("/java/")
+                        || s.contains(":java/")
+                        || s.ends_with(":java")
+                });
+                let has_main_java_src = r.srcs.iter().any(|s| {
+                    s.starts_with("src/main/java/")
+                        || s.contains("/src/main/java/")
+                        || s.contains(":src/main/java/")
+                });
+                if has_java_src && src_dir.join("java").exists() {
                     src_dir.join("java")
-                } else if r.srcs.iter().any(|s| s.starts_with("src/main/java/") || s.contains("/src/main/java/")) && src_dir.join("src/main/java").exists() {
+                } else if has_main_java_src && src_dir.join("src/main/java").exists() {
                     src_dir.join("src/main/java")
                 } else {
                     src_dir.clone()
@@ -410,10 +467,18 @@ rootProject.name = "bazel-gradle-view"
                         };
 
                         if let Some((pkg, file)) = without_java.strip_prefix("//").and_then(|t| t.split_once(':')) {
-                            if pkg == mod_label.package_dir() {
-                                Some(file.to_string())
+                            let file_clean = if effective_src_dir.ends_with("java") {
+                                file.strip_prefix("java/").unwrap_or(file)
+                            } else if effective_src_dir.ends_with("src/main/java") {
+                                file.strip_prefix("src/main/java/").unwrap_or(file)
                             } else {
-                                Some(format!("{pkg}/{file}"))
+                                file
+                            };
+
+                            if pkg == mod_label.package_dir() {
+                                Some(file_clean.to_string())
+                            } else {
+                                Some(format!("{pkg}/{file_clean}"))
                             }
                         } else if let Some(stripped) = without_java.strip_prefix(':') {
                             Some(stripped.to_string())
@@ -463,10 +528,14 @@ rootProject.name = "bazel-gradle-view"
                 let target_sdk = self.config.target_sdk;
 
                 let compose_block = if has_compose {
-                    let compose_compiler_ver = self.config.compose_compiler_version.as_deref().unwrap_or("1.5.8");
-                    format!(
-                        "    buildFeatures {{\n        compose = true\n    }}\n    composeOptions {{\n        kotlinCompilerExtensionVersion = \"{compose_compiler_ver}\"\n    }}\n"
-                    )
+                    if is_agp_9_plus {
+                        "    buildFeatures {\n        compose = true\n    }\n".to_string()
+                    } else {
+                        let compose_compiler_ver = self.config.compose_compiler_version.as_deref().unwrap_or("1.5.8");
+                        format!(
+                            "    buildFeatures {{\n        compose = true\n    }}\n    composeOptions {{\n        kotlinCompilerExtensionVersion = \"{compose_compiler_ver}\"\n    }}\n"
+                        )
+                    }
                 } else {
                     String::new()
                 };
@@ -501,7 +570,11 @@ rootProject.name = "bazel-gradle-view"
                         let rel = relative_path(&module_overlay_dir, &res_path);
                         rel.to_string_lossy().replace('\\', "/")
                     };
-                    format!("            res.srcDirs(listOf(file(\"{res_str}\")))\n")
+                    if is_agp_9_plus {
+                        format!("            res.directories += \"{res_str}\"\n")
+                    } else {
+                        format!("            res.srcDirs(listOf(file(\"{res_str}\")))\n")
+                    }
                 } else {
                     String::new()
                 };
@@ -515,7 +588,20 @@ rootProject.name = "bazel-gradle-view"
                 };
 
                 let src_dir_line = if has_srcs {
-                    format!("            java.srcDirs(listOf(file(\"{effective_src_dir_str}\")))\n")
+                    if is_agp_9_plus {
+                        let has_java_file = rule.map(|r| r.srcs.iter().any(|s| s.ends_with(".java"))).unwrap_or(false);
+                        let has_kt_file = rule.map(|r| r.srcs.iter().any(|s| s.ends_with(".kt"))).unwrap_or(false);
+                        let mut lines = String::new();
+                        if has_kt_file || (is_kotlin && !has_java_file) {
+                            lines.push_str(&format!("            kotlin.directories += \"{effective_src_dir_str}\"\n"));
+                        }
+                        if has_java_file || (!has_kt_file && !is_kotlin) {
+                            lines.push_str(&format!("            java.directories += \"{effective_src_dir_str}\"\n"));
+                        }
+                        lines
+                    } else {
+                        format!("            java.srcDirs(listOf(file(\"{effective_src_dir_str}\")))\n")
+                    }
                 } else {
                     String::new()
                 };
@@ -925,7 +1011,11 @@ mod tests {
         let props_path = out_dir.path().join("gradle/wrapper/gradle-wrapper.properties");
         assert!(props_path.exists());
         let content = fs::read_to_string(props_path).unwrap();
-        assert!(content.contains("gradle-9.6"));
+        assert!(content.contains("gradle-9.6.1"));
+
+        assert!(out_dir.path().join("gradlew").exists());
+        assert!(out_dir.path().join("gradlew.bat").exists());
+        assert!(out_dir.path().join("gradle/wrapper/gradle-wrapper.jar").exists());
     }
 }
 

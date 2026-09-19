@@ -44,8 +44,8 @@ impl WorkspaceConfig {
 
         // 2. Detect Kotlin version
         let kotlin_version = Self::extract_kotlin_version(&all_content).unwrap_or_else(|| {
-            warn!("Unspecified Kotlin version in Bazel workspace, defaulting to 1.9.22");
-            "1.9.22".to_string()
+            warn!("Unspecified Kotlin version in Bazel workspace, defaulting to 1.9.25");
+            "1.9.25".to_string()
         });
 
         // 3. Detect Compose compiler version

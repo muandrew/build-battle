@@ -27,25 +27,25 @@ pub struct IdeProfile {
 
 /// The full compatibility table, ordered oldest → newest.
 static PROFILES: &[IdeProfile] = &[
-    IdeProfile { ide_key: "k1",  ide_name: "Koala",     ide_version: "2024.1.1", agp_version: "8.5.2",  min_gradle: "8.6",  min_jdk: 17, max_compile_sdk: 34, max_agp: "8.5"  },
-    IdeProfile { ide_key: "k2",  ide_name: "Koala 2",   ide_version: "2024.1.2", agp_version: "8.6.1",  min_gradle: "8.7",  min_jdk: 17, max_compile_sdk: 35, max_agp: "8.6"  },
-    IdeProfile { ide_key: "l1",  ide_name: "Ladybug",   ide_version: "2024.2.1", agp_version: "8.7.3",  min_gradle: "8.9",  min_jdk: 17, max_compile_sdk: 35, max_agp: "8.7"  },
-    IdeProfile { ide_key: "l2",  ide_name: "Ladybug 2", ide_version: "2024.2.2", agp_version: "8.8.0",  min_gradle: "8.9",  min_jdk: 17, max_compile_sdk: 35, max_agp: "8.8"  },
-    IdeProfile { ide_key: "m1",  ide_name: "Meerkat",   ide_version: "2024.3.1", agp_version: "8.9.1",  min_gradle: "8.11", min_jdk: 17, max_compile_sdk: 35, max_agp: "8.9"  },
-    IdeProfile { ide_key: "m2",  ide_name: "Meerkat 2", ide_version: "2024.3.2", agp_version: "8.10.0", min_gradle: "8.11", min_jdk: 17, max_compile_sdk: 35, max_agp: "8.10" },
-    IdeProfile { ide_key: "n1",  ide_name: "Narwhal",   ide_version: "2025.1.1", agp_version: "8.11.1", min_gradle: "8.11", min_jdk: 17, max_compile_sdk: 36, max_agp: "8.11" },
-    IdeProfile { ide_key: "n2",  ide_name: "Narwhal 2", ide_version: "2025.1.2", agp_version: "8.12.1", min_gradle: "8.12", min_jdk: 17, max_compile_sdk: 36, max_agp: "8.13" },
-    IdeProfile { ide_key: "o1",  ide_name: "Otter",     ide_version: "2025.2.1", agp_version: "8.13.0", min_gradle: "8.12", min_jdk: 17, max_compile_sdk: 36, max_agp: "8.13" },
-    IdeProfile { ide_key: "o2",  ide_name: "Otter 2",   ide_version: "2025.2.2", agp_version: "9.0.0",  min_gradle: "9.1",  min_jdk: 17, max_compile_sdk: 36, max_agp: "9.0"  },
-    IdeProfile { ide_key: "o3",  ide_name: "Otter 3",   ide_version: "2025.2.3", agp_version: "9.0.1",  min_gradle: "9.1",  min_jdk: 17, max_compile_sdk: 36, max_agp: "9.0"  },
-    IdeProfile { ide_key: "p1",  ide_name: "Panda",     ide_version: "2025.3.1", agp_version: "9.1.0",  min_gradle: "9.1",  min_jdk: 17, max_compile_sdk: 36, max_agp: "9.1"  },
-    IdeProfile { ide_key: "p2",  ide_name: "Panda 2",   ide_version: "2025.3.2", agp_version: "9.1.1",  min_gradle: "9.2",  min_jdk: 17, max_compile_sdk: 36, max_agp: "9.1"  },
-    IdeProfile { ide_key: "p3",  ide_name: "Panda 3",   ide_version: "2025.3.3", agp_version: "9.2.0",  min_gradle: "9.3",  min_jdk: 17, max_compile_sdk: 36, max_agp: "9.2"  },
-    IdeProfile { ide_key: "p4",  ide_name: "Panda 4",   ide_version: "2025.3.4", agp_version: "9.2.1",  min_gradle: "9.3",  min_jdk: 17, max_compile_sdk: 36, max_agp: "9.2"  },
-    IdeProfile { ide_key: "q1",  ide_name: "Quail",     ide_version: "2026.1.1", agp_version: "9.3.0",  min_gradle: "9.5",  min_jdk: 17, max_compile_sdk: 37, max_agp: "9.3"  },
-    IdeProfile { ide_key: "q2",  ide_name: "Quail 2",   ide_version: "2026.1.2", agp_version: "9.3.1",  min_gradle: "9.5",  min_jdk: 17, max_compile_sdk: 37, max_agp: "9.3"  },
-    IdeProfile { ide_key: "q3",  ide_name: "Quail 3",   ide_version: "2026.1.3", agp_version: "9.4.0",  min_gradle: "9.6",  min_jdk: 17, max_compile_sdk: 37, max_agp: "9.4"  },
-    IdeProfile { ide_key: "q4",  ide_name: "Quail 4",   ide_version: "2026.1.4", agp_version: "9.4.1",  min_gradle: "9.6",  min_jdk: 17, max_compile_sdk: 37, max_agp: "9.4"  },
+    IdeProfile { ide_key: "k1",  ide_name: "Koala",     ide_version: "2024.1.1", agp_version: "8.5.2",  min_gradle: "8.6",    min_jdk: 17, max_compile_sdk: 34, max_agp: "8.5"  },
+    IdeProfile { ide_key: "k2",  ide_name: "Koala 2",   ide_version: "2024.1.2", agp_version: "8.6.1",  min_gradle: "8.7",    min_jdk: 17, max_compile_sdk: 35, max_agp: "8.6"  },
+    IdeProfile { ide_key: "l1",  ide_name: "Ladybug",   ide_version: "2024.2.1", agp_version: "8.7.3",  min_gradle: "8.9",    min_jdk: 17, max_compile_sdk: 35, max_agp: "8.7"  },
+    IdeProfile { ide_key: "l2",  ide_name: "Ladybug 2", ide_version: "2024.2.2", agp_version: "8.8.2",  min_gradle: "8.9",    min_jdk: 17, max_compile_sdk: 35, max_agp: "8.8"  },
+    IdeProfile { ide_key: "m1",  ide_name: "Meerkat",   ide_version: "2024.3.1", agp_version: "8.9.3",  min_gradle: "8.11.1", min_jdk: 17, max_compile_sdk: 35, max_agp: "8.9"  },
+    IdeProfile { ide_key: "m2",  ide_name: "Meerkat 2", ide_version: "2024.3.2", agp_version: "8.10.1", min_gradle: "8.11.1", min_jdk: 17, max_compile_sdk: 35, max_agp: "8.10" },
+    IdeProfile { ide_key: "n1",  ide_name: "Narwhal",   ide_version: "2025.1.1", agp_version: "8.11.2", min_gradle: "8.11.1", min_jdk: 17, max_compile_sdk: 36, max_agp: "8.11" },
+    IdeProfile { ide_key: "n2",  ide_name: "Narwhal 2", ide_version: "2025.1.2", agp_version: "8.12.3", min_gradle: "8.12.1", min_jdk: 17, max_compile_sdk: 36, max_agp: "8.13" },
+    IdeProfile { ide_key: "o1",  ide_name: "Otter",     ide_version: "2025.2.1", agp_version: "8.13.2", min_gradle: "8.12.1", min_jdk: 17, max_compile_sdk: 36, max_agp: "8.13" },
+    IdeProfile { ide_key: "o2",  ide_name: "Otter 2",   ide_version: "2025.2.2", agp_version: "9.0.1",  min_gradle: "9.1.0",  min_jdk: 17, max_compile_sdk: 36, max_agp: "9.0"  },
+    IdeProfile { ide_key: "o3",  ide_name: "Otter 3",   ide_version: "2025.2.3", agp_version: "9.0.1",  min_gradle: "9.1.0",  min_jdk: 17, max_compile_sdk: 36, max_agp: "9.0"  },
+    IdeProfile { ide_key: "p1",  ide_name: "Panda",     ide_version: "2025.3.1", agp_version: "9.1.1",  min_gradle: "9.1.0",  min_jdk: 17, max_compile_sdk: 36, max_agp: "9.1"  },
+    IdeProfile { ide_key: "p2",  ide_name: "Panda 2",   ide_version: "2025.3.2", agp_version: "9.1.1",  min_gradle: "9.2.1",  min_jdk: 17, max_compile_sdk: 36, max_agp: "9.1"  },
+    IdeProfile { ide_key: "p3",  ide_name: "Panda 3",   ide_version: "2025.3.3", agp_version: "9.2.1",  min_gradle: "9.3.1",  min_jdk: 17, max_compile_sdk: 36, max_agp: "9.2"  },
+    IdeProfile { ide_key: "p4",  ide_name: "Panda 4",   ide_version: "2025.3.4", agp_version: "9.2.1",  min_gradle: "9.3.1",  min_jdk: 17, max_compile_sdk: 36, max_agp: "9.2"  },
+    IdeProfile { ide_key: "q1",  ide_name: "Quail",     ide_version: "2026.1.1", agp_version: "9.3.3",  min_gradle: "9.5.1",  min_jdk: 17, max_compile_sdk: 37, max_agp: "9.3"  },
+    IdeProfile { ide_key: "q2",  ide_name: "Quail 2",   ide_version: "2026.1.2", agp_version: "9.3.3",  min_gradle: "9.5.1",  min_jdk: 17, max_compile_sdk: 37, max_agp: "9.3"  },
+    IdeProfile { ide_key: "q3",  ide_name: "Quail 3",   ide_version: "2026.1.3", agp_version: "9.4.1",  min_gradle: "9.6.1",  min_jdk: 17, max_compile_sdk: 37, max_agp: "9.4"  },
+    IdeProfile { ide_key: "q4",  ide_name: "Quail 4",   ide_version: "2026.1.4", agp_version: "9.4.1",  min_gradle: "9.6.1",  min_jdk: 17, max_compile_sdk: 37, max_agp: "9.4"  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -99,6 +99,43 @@ pub fn version_cmp_truncated(a: &str, b: &str) -> Ordering {
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+/// Given a Gradle version string (e.g. "9.6" or "8.11" or "9.6.1"),
+/// returns the highest known patch release for that minor version that exists.
+pub fn resolve_highest_gradle_version(v: &str) -> String {
+    let parts: Vec<&str> = v.split('.').collect();
+    if parts.len() >= 2 {
+        let major = parts[0];
+        let minor = parts[1];
+        match (major, minor) {
+            ("9", "7") => return "9.7.1".to_string(),
+            ("9", "6") => return "9.6.1".to_string(),
+            ("9", "5") => return "9.5.1".to_string(),
+            ("9", "4") => return "9.4.1".to_string(),
+            ("9", "3") => return "9.3.1".to_string(),
+            ("9", "2") => return "9.2.1".to_string(),
+            ("9", "1") => return "9.1.0".to_string(),
+            ("9", "0") => return "9.0.0".to_string(),
+            ("8", "14") => return "8.14.5".to_string(),
+            ("8", "13") => return "8.13".to_string(),
+            ("8", "12") => return "8.12.1".to_string(),
+            ("8", "11") => return "8.11.1".to_string(),
+            ("8", "10") => return "8.10.2".to_string(),
+            ("8", "9") => return "8.9".to_string(),
+            ("8", "8") => return "8.8".to_string(),
+            ("8", "7") => return "8.7".to_string(),
+            ("8", "6") => return "8.6".to_string(),
+            ("8", "5") => return "8.5".to_string(),
+            ("8", "4") => return "8.4".to_string(),
+            ("8", "3") => return "8.3".to_string(),
+            ("8", "2") => return "8.2.1".to_string(),
+            ("8", "1") => return "8.1.1".to_string(),
+            ("8", "0") => return "8.0.2".to_string(),
+            _ => {}
+        }
+    }
+    v.to_string()
+}
 
 /// Return the full list of profiles, ordered oldest → newest.
 pub fn list_profiles() -> &'static [IdeProfile] {
@@ -177,7 +214,7 @@ mod tests {
         WorkspaceConfig {
             java_version: java,
             java_installations: vec![],
-            kotlin_version: "1.9.22".to_string(),
+            kotlin_version: "1.9.25".to_string(),
             compose_compiler_version: None,
             agp_version: agp.to_string(),
             compile_sdk,
