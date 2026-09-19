@@ -1,3 +1,4 @@
+pub mod compat;
 pub mod config;
 pub mod model;
 pub mod query;

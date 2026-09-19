@@ -46,6 +46,16 @@ pub struct Cli {
     /// Enable verbose logging
     #[arg(short, long)]
     pub verbose: bool,
+
+    /// Target IDE compatibility profile (e.g. min, max, p2, q4, m1) [default: max].
+    /// Respects workspace-detected values; warns on conflicts.
+    #[arg(long, value_name = "IDE_KEY", conflicts_with = "fide")]
+    pub ide: Option<String>,
+
+    /// Force IDE profile override (e.g. p2, q4). Overrides all workspace values.
+    /// Does not accept "min" or "max".
+    #[arg(long, value_name = "IDE_KEY", conflicts_with = "ide")]
+    pub fide: Option<String>,
 }
 
 fn looks_like_target(s: &str) -> bool {
@@ -99,6 +109,8 @@ impl Cli {
                 || arg_str == "--output-path"
                 || arg_str == "--op"
                 || arg_str == "--bazel-bin"
+                || arg_str == "--ide"
+                || arg_str == "--fide"
             {
                 transformed_args.push(arg_os.clone());
                 if i + 1 < rest.len() {
@@ -221,5 +233,41 @@ mod tests {
         .unwrap();
         assert_eq!(cli_long_dash.output_path, PathMode::Relative);
     }
+
+    #[test]
+    fn test_cli_parsing_ide_flag() {
+        let cli = Cli::try_parse_normalized_from([
+            "gv", "/my/root", "/my/out", "//pkg:target", "--ide", "p2",
+        ])
+        .unwrap();
+        assert_eq!(cli.ide.as_deref(), Some("p2"));
+        assert_eq!(cli.fide, None);
+
+        let cli_min = Cli::try_parse_normalized_from([
+            "gv", "/my/root", "//pkg:target", "--ide", "min",
+        ])
+        .unwrap();
+        assert_eq!(cli_min.ide.as_deref(), Some("min"));
+        assert_eq!(cli_min.output_dir, None);
+    }
+
+    #[test]
+    fn test_cli_parsing_fide_flag() {
+        let cli = Cli::try_parse_normalized_from([
+            "gv", "/my/root", "/my/out", "//pkg:target", "--fide", "q4",
+        ])
+        .unwrap();
+        assert_eq!(cli.fide.as_deref(), Some("q4"));
+        assert_eq!(cli.ide, None);
+    }
+
+    #[test]
+    fn test_cli_parsing_ide_fide_conflict() {
+        let res = Cli::try_parse_normalized_from([
+            "gv", "/my/root", "/my/out", "//pkg:target", "--ide", "p2", "--fide", "q4",
+        ]);
+        assert!(res.is_err());
+    }
 }
+
 

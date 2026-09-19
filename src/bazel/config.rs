@@ -1,3 +1,4 @@
+use crate::bazel::compat::IdeProfile;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
@@ -88,6 +89,29 @@ impl WorkspaceConfig {
             target_sdk,
             android_sdk_dir,
             maven_artifacts,
+        }
+    }
+
+    /// Apply an IDE profile to workspace config when compatible.
+    /// Updates AGP to the profile's default and raises JDK if below the profile's minimum.
+    pub fn apply_ide_profile(&mut self, profile: &IdeProfile) {
+        self.agp_version = profile.agp_version.to_string();
+        if self.java_version < profile.min_jdk {
+            self.java_version = profile.min_jdk;
+        }
+    }
+
+    /// Force-override workspace config values with an IDE profile's values.
+    /// Used by `--fide`. Unconditionally replaces AGP and JDK.
+    /// Clamps compileSdk and targetSdk down if they exceed the profile's maximum.
+    pub fn force_ide_profile(&mut self, profile: &IdeProfile) {
+        self.agp_version = profile.agp_version.to_string();
+        self.java_version = profile.min_jdk;
+        if self.compile_sdk > profile.max_compile_sdk {
+            self.compile_sdk = profile.max_compile_sdk;
+        }
+        if self.target_sdk > profile.max_compile_sdk {
+            self.target_sdk = profile.max_compile_sdk;
         }
     }
 
@@ -333,3 +357,56 @@ impl WorkspaceConfig {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bazel::compat::resolve_ide_profile;
+
+    #[test]
+    fn test_apply_ide_profile() {
+        let mut cfg = WorkspaceConfig {
+            java_version: 11,
+            java_installations: vec![],
+            kotlin_version: "1.9.22".to_string(),
+            compose_compiler_version: None,
+            agp_version: "8.2.2".to_string(),
+            compile_sdk: 34,
+            min_sdk: 21,
+            target_sdk: 30,
+            android_sdk_dir: None,
+            maven_artifacts: HashMap::new(),
+        };
+
+        let p2 = resolve_ide_profile("p2").unwrap();
+        cfg.apply_ide_profile(p2);
+        assert_eq!(cfg.agp_version, "9.1.1");
+        assert_eq!(cfg.java_version, 17);
+        assert_eq!(cfg.compile_sdk, 34); // Preserved
+        assert_eq!(cfg.target_sdk, 30);  // Preserved
+    }
+
+    #[test]
+    fn test_force_ide_profile_clamps_sdk() {
+        let mut cfg = WorkspaceConfig {
+            java_version: 11,
+            java_installations: vec![],
+            kotlin_version: "1.9.22".to_string(),
+            compose_compiler_version: None,
+            agp_version: "9.4.0".to_string(),
+            compile_sdk: 36,
+            min_sdk: 21,
+            target_sdk: 35,
+            android_sdk_dir: None,
+            maven_artifacts: HashMap::new(),
+        };
+
+        let k1 = resolve_ide_profile("k1").unwrap(); // max_compile_sdk is 34
+        cfg.force_ide_profile(k1);
+        assert_eq!(cfg.agp_version, "8.5.2");
+        assert_eq!(cfg.java_version, 17);
+        assert_eq!(cfg.compile_sdk, 34); // Clamped down from 36
+        assert_eq!(cfg.target_sdk, 34);  // Clamped down from 35
+    }
+}
+

@@ -73,6 +73,7 @@ pub struct GradleGenerator {
     pub workspace_prefix: PathBuf,
     pub path_absolute: bool,
     pub config: WorkspaceConfig,
+    pub gradle_version: String,
 }
 
 impl GradleGenerator {
@@ -81,14 +82,16 @@ impl GradleGenerator {
         workspace_root: PathBuf,
         workspace_prefix: PathBuf,
         path_absolute: bool,
+        gradle_version: Option<String>,
     ) -> Self {
         let config = WorkspaceConfig::detect(&workspace_root);
         Self {
             output_dir,
-            workspace_root,
+            workspace_root: workspace_root.clone(),
             workspace_prefix,
             path_absolute,
             config,
+            gradle_version: gradle_version.unwrap_or_else(|| "8.5".to_string()),
         }
     }
 
@@ -160,7 +163,7 @@ impl GradleGenerator {
                 match std::process::Command::new(cand)
                     .arg("wrapper")
                     .arg("--gradle-version")
-                    .arg("8.5")
+                    .arg(&self.gradle_version)
                     .current_dir(tdir.path())
                     .output()
                 {
@@ -189,12 +192,13 @@ impl GradleGenerator {
         fs::create_dir_all(&wrapper_dir)?;
         let props_path = wrapper_dir.join("gradle-wrapper.properties");
         if !props_path.exists() {
+            let gradle_ver = &self.gradle_version;
             let mut file = File::create(props_path)?;
             writeln!(
                 file,
                 "distributionBase=GRADLE_USER_HOME\n\
                  distributionPath=wrapper/dists\n\
-                 distributionUrl=https\\://services.gradle.org/distributions/gradle-8.5-bin.zip\n\
+                 distributionUrl=https\\://services.gradle.org/distributions/gradle-{gradle_ver}-bin.zip\n\
                  zipStoreBase=GRADLE_USER_HOME\n\
                  zipStorePath=wrapper/dists"
             )?;
@@ -865,6 +869,7 @@ mod tests {
             ws_dir.path().to_path_buf(),
             PathBuf::new(),
             false,
+            None,
         );
         gen_rel.generate(&sliced).unwrap();
 
@@ -884,6 +889,7 @@ mod tests {
             ws_dir.path().to_path_buf(),
             PathBuf::new(),
             true,
+            None,
         );
         gen_abs.generate(&sliced).unwrap();
 
@@ -895,5 +901,32 @@ mod tests {
         .unwrap();
         assert!(pkg_a_build_abs.contains(&ws_dir.path().to_string_lossy().to_string()));
     }
+
+    #[test]
+    fn test_gradle_wrapper_custom_version() {
+        let ws_dir = tempdir().unwrap();
+        let out_dir = tempdir().unwrap();
+
+        let sliced = SlicedView {
+            modules: HashSet::new(),
+            boundary_targets: HashSet::new(),
+            target_rules: HashMap::new(),
+        };
+
+        let gen = GradleGenerator::new(
+            out_dir.path().to_path_buf(),
+            ws_dir.path().to_path_buf(),
+            PathBuf::new(),
+            false,
+            Some("9.6".to_string()),
+        );
+        gen.generate(&sliced).unwrap();
+
+        let props_path = out_dir.path().join("gradle/wrapper/gradle-wrapper.properties");
+        assert!(props_path.exists());
+        let content = fs::read_to_string(props_path).unwrap();
+        assert!(content.contains("gradle-9.6"));
+    }
 }
+
 

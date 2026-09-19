@@ -36,6 +36,8 @@ gv <bazel-project-root> <output-dir> <target> [additional-targets...] [options]
 ### CLI Options
 - `-op`, `--outputpath`, `--output-path <relative|absolute>`: Path mode for emitted build files (`relative` or `absolute`, defaults to `absolute`).
 - `--bazel-bin <path>`: Path to the Bazel / Bazelisk binary (defaults to `bazel` found in `$PATH`).
+- `--ide <min|max|<key>>`: Target IDE compatibility profile (e.g. `min`, `max`, `p2`, `q4`, `m1`, defaults to `max`). Respects workspace values and warns if conflicts are detected.
+- `--fide <<key>>`: Force IDE profile override (e.g. `p2`, `q4`). Overrides AGP, JDK, and clamps compileSdk/targetSdk without warning. Does not accept `min` or `max`.
 - `-v`, `--verbose`: Enable debug logging and verbose Bazel query output.
 
 ---
