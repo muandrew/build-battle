@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 GV="${ROOT_DIR}/target/debug/gv"
+cd "${ROOT_DIR}"
 
 # ── Colors ───────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -64,8 +65,31 @@ verify_android_jetpack_compose() {
   fi
 }
 
+test_cmp_android_desktop() {
+  local desc="playground-bazel/cmp: generate view for Android and desktop apps"
+  rm -rf "${ROOT_DIR}/e2e/gv_cmp"
+  if "${GV}" e2e/playground-bazel/example/cmp e2e/gv_cmp //android:android_app //desktop:desktop_app \
+    && [[ -f "${ROOT_DIR}/e2e/gv_cmp/example/cmp/android/android_app/build.gradle.kts" ]] \
+    && [[ -f "${ROOT_DIR}/e2e/gv_cmp/example/cmp/desktop/desktop_app/build.gradle.kts" ]]; then
+    pass "${desc}"
+  else
+    fail "${desc}"
+  fi
+}
+
+verify_cmp_android_desktop() {
+  local desc="playground-bazel/cmp: assemble Android APK and build desktop app"
+  if (cd "${ROOT_DIR}/e2e/gv_cmp" && ./gradlew :example:cmp:android:android_app:assembleDebug :example:cmp:desktop:desktop_app:build) \
+    && compgen -G "${ROOT_DIR}/e2e/gv_cmp/example/cmp/android/android_app/build/outputs/apk/debug/*.apk" >/dev/null \
+    && compgen -G "${ROOT_DIR}/e2e/gv_cmp/example/cmp/desktop/desktop_app/build/distributions/*.zip" >/dev/null; then
+    pass "${desc}"
+  else
+    fail "${desc}"
+  fi
+}
+
 # ── Test Registry ────────────────────────────────────────────────────
-ALL_TESTS=(copybara_buildozer android_jetpack_compose)
+ALL_TESTS=(copybara_buildozer android_jetpack_compose cmp_android_desktop)
 
 # ── Usage ────────────────────────────────────────────────────────────
 usage() {

@@ -133,6 +133,7 @@ pub enum RuleKind {
     JavaBinary,
     JavaTest,
     KotlinJvmLibrary,
+    KotlinJvmBinary,
     KotlinJvmTest,
     AndroidApplication,
     AndroidLibrary,
@@ -151,6 +152,7 @@ impl RuleKind {
             "java_binary" => RuleKind::JavaBinary,
             "java_test" | "android_test" | "android_local_test" => RuleKind::JavaTest,
             "kt_jvm_library" => RuleKind::KotlinJvmLibrary,
+            "kt_jvm_binary" => RuleKind::KotlinJvmBinary,
             "kt_jvm_test" => RuleKind::KotlinJvmTest,
             "proto_library" | "java_proto_library" => RuleKind::ProtoLibrary,
             other => RuleKind::Other(other.to_string()),
@@ -171,8 +173,22 @@ impl RuleKind {
             self,
             RuleKind::KotlinJvmLibrary
                 | RuleKind::KotlinJvmTest
+                | RuleKind::KotlinJvmBinary
                 | RuleKind::KotlinAndroidLibrary
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_kotlin_jvm_binary_as_kotlin() {
+        let kind = RuleKind::from_rule_class("kt_jvm_binary");
+        assert_eq!(kind, RuleKind::KotlinJvmBinary);
+        assert!(kind.is_kotlin());
+        assert!(!kind.is_android());
     }
 }
 

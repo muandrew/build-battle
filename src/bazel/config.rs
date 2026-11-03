@@ -118,10 +118,26 @@ impl WorkspaceConfig {
     fn extract_maven_artifacts(content: &str) -> HashMap<String, String> {
         let mut map = HashMap::new();
         let mut compose_version = None;
+        // `rules_jvm_external` can expose several named repositories from one
+        // workspace (for example `maven` and `android_maven`). Keep the legacy
+        // aliases, and also record the exact repository label for each install.
+        let mut install_repo: Option<String> = None;
         for line in content.lines() {
-            let trimmed = line
-                .trim()
-                .trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c.is_whitespace());
+            let trimmed_line = line.trim();
+            if trimmed_line.contains(".install(") {
+                install_repo = None;
+            }
+            if let Some((_, name)) = trimmed_line.split_once("name =") {
+                let name = name.trim().trim_end_matches(',').trim_matches(['"', '\'']);
+                if !name.is_empty() {
+                    install_repo = Some(name.to_string());
+                }
+            }
+            let raw = line.trim();
+            let trimmed = raw
+                .find('"').and_then(|start| raw[start + 1..].find('"').map(|end| &raw[start + 1..start + 1 + end]))
+                .or_else(|| raw.find('\'').and_then(|start| raw[start + 1..].find('\'').map(|end| &raw[start + 1..start + 1 + end])))
+                .unwrap_or_else(|| raw.trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c.is_whitespace()));
             if let Some((group, rest)) = trimmed.split_once(':') {
                 if let Some((artifact, ver)) = rest.split_once(':') {
                     if group.starts_with("androidx.compose") && compose_version.is_none() && !group.contains("compiler") {
@@ -136,6 +152,9 @@ impl WorkspaceConfig {
                     map.insert(key.clone(), trimmed.to_string());
                     map.insert(format!("@maven//:{key}"), trimmed.to_string());
                     map.insert(format!("//:{key}"), trimmed.to_string());
+                    if let Some(repo) = &install_repo {
+                        map.insert(format!("@{repo}//:{key}"), trimmed.to_string());
+                    }
                 }
             }
         }
@@ -153,8 +172,12 @@ impl WorkspaceConfig {
     }
 
     fn extract_kotlin_version(content: &str) -> Option<String> {
+        let mut in_kotlinc_version = false;
         for line in content.lines() {
             let trimmed = line.trim();
+            if trimmed.contains("kotlinc_version(") {
+                in_kotlinc_version = true;
+            }
             if trimmed.starts_with("_KOTLIN_COMPILER_VERSION") || trimmed.starts_with("KOTLIN_VERSION") {
                 if let Some((_, val)) = trimmed.split_once('=') {
                     let clean = val.trim().trim_matches('"').trim_matches('\'').trim();
@@ -163,12 +186,22 @@ impl WorkspaceConfig {
                     }
                 }
             }
-            if trimmed.contains("kotlinc_version") && trimmed.contains("release =") {
+            if in_kotlinc_version {
+                if let Some((_, after)) = trimmed.split_once("version =") {
+                    let clean = after.trim().trim_matches(',').trim().trim_matches('"').trim_matches('\'').trim();
+                    if !clean.is_empty() && !clean.starts_with('_') {
+                        return Some(clean.to_string());
+                    }
+                }
+                // Older rules_kotlin extension syntax.
                 if let Some((_, after)) = trimmed.split_once("release =") {
                     let clean = after.trim().trim_matches('"').trim_matches('\'').trim_matches(',').trim();
                     if !clean.is_empty() && !clean.starts_with('_') {
                         return Some(clean.to_string());
                     }
+                }
+                if trimmed.contains(')') {
+                    in_kotlinc_version = false;
                 }
             }
         }
@@ -362,6 +395,36 @@ impl WorkspaceConfig {
 mod tests {
     use super::*;
     use crate::bazel::compat::resolve_ide_profile;
+
+    #[test]
+    fn detects_modern_rules_kotlin_version_argument() {
+        let content = r#"
+rules_kotlin_extensions.kotlinc_version(
+    version = "2.3.21",
+    sha256 = "abc",
+)
+"#;
+        assert_eq!(WorkspaceConfig::extract_kotlin_version(content).as_deref(), Some("2.3.21"));
+    }
+
+    #[test]
+    fn records_maven_artifacts_under_their_named_repositories() {
+        let content = r#"
+maven.install(
+    name = "maven",
+    artifacts = ["org.example:desktop:1.2.3"],
+)
+maven.install(
+    name = "android_maven",
+    artifacts = ["org.example:android:4.5.6"],
+)
+"#;
+        let artifacts = WorkspaceConfig::extract_maven_artifacts(content);
+        assert_eq!(artifacts.get("@maven//:org_example_desktop").map(String::as_str), Some("org.example:desktop:1.2.3"));
+        assert_eq!(artifacts.get("@android_maven//:org_example_android").map(String::as_str), Some("org.example:android:4.5.6"));
+        // Keep the existing generic lookup keys used by target resolution.
+        assert_eq!(artifacts.get("org_example_desktop").map(String::as_str), Some("org.example:desktop:1.2.3"));
+    }
 
     #[test]
     fn test_apply_ide_profile() {

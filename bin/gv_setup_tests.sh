@@ -28,5 +28,6 @@ setup_fixture() {
 # Define and setup fixtures
 setup_fixture "copybara" "https://github.com/google/copybara.git"
 setup_fixture "examples" "https://github.com/bazelbuild/examples.git"
+setup_fixture "playground-bazel" "https://github.com/muandrew/playground-bazel.git"
 
 echo "All test fixtures are ready in ${FIXTURES_DIR}."

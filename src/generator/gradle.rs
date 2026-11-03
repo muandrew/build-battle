@@ -241,6 +241,7 @@ rootProject.name = "bazel-gradle-view"
         let kotlin_ver = &self.config.kotlin_version;
         let agp_ver = &self.config.agp_version;
         let is_agp_9_plus = crate::bazel::compat::version_cmp(agp_ver, "9.0.0") != std::cmp::Ordering::Less;
+        let is_kotlin_2_plus = crate::bazel::compat::version_cmp(kotlin_ver, "2.0.0") != std::cmp::Ordering::Less;
 
         let any_compose = sliced.modules.iter().any(|mod_label| {
             sliced.target_rules.get(mod_label).map(|r| r.has_compose() || (r.kind.is_android() && self.config.compose_compiler_version.is_some())).unwrap_or(false)
@@ -254,8 +255,8 @@ rootProject.name = "bazel-gradle-view"
         }
         writeln!(file, "    id(\"com.android.application\") version \"{agp_ver}\" apply false")?;
         writeln!(file, "    id(\"com.android.library\") version \"{agp_ver}\" apply false")?;
-        if is_agp_9_plus && any_compose {
-            writeln!(file, "    id(\"org.jetbrains.kotlin.plugin.compose\") version \"2.2.10\" apply false")?;
+        if any_compose && is_kotlin_2_plus {
+            writeln!(file, "    id(\"org.jetbrains.kotlin.plugin.compose\") version \"{kotlin_ver}\" apply false")?;
         }
         writeln!(file, "}}\n")?;
 
@@ -379,33 +380,36 @@ rootProject.name = "bazel-gradle-view"
             let is_android_lib = rule.map(|r| matches!(r.kind, RuleKind::AndroidLibrary | RuleKind::KotlinAndroidLibrary)).unwrap_or(false);
             let is_android = rule.map(|r| r.kind.is_android()).unwrap_or(false);
             let is_kotlin = rule.map(|r| r.kind.is_kotlin() || r.srcs.iter().any(|s| s.ends_with(".kt"))).unwrap_or(false);
-            let is_binary = rule.map(|r| matches!(r.kind, RuleKind::JavaBinary)).unwrap_or(false);
+            let is_binary = rule.map(|r| matches!(r.kind, RuleKind::JavaBinary | RuleKind::KotlinJvmBinary)).unwrap_or(false);
             let has_compose = rule.map(|r| r.has_compose()).unwrap_or(false) || (is_android && self.config.compose_compiler_version.is_some());
             let is_agp_9_plus = crate::bazel::compat::version_cmp(&self.config.agp_version, "9.0.0") != std::cmp::Ordering::Less;
+            let is_kotlin_2_plus = crate::bazel::compat::version_cmp(&self.config.kotlin_version, "2.0.0") != std::cmp::Ordering::Less;
 
             // 1. Plugins
             let plugin_str = if is_android_app {
                 let mut plugins = vec!["    id(\"com.android.application\")".to_string()];
-                if is_agp_9_plus {
-                    if has_compose {
-                        plugins.push("    id(\"org.jetbrains.kotlin.plugin.compose\")".to_string());
-                    }
-                } else if is_kotlin {
+                if !is_agp_9_plus && is_kotlin {
                     plugins.push("    kotlin(\"android\")".to_string());
+                }
+                if has_compose && is_kotlin_2_plus {
+                    plugins.push("    id(\"org.jetbrains.kotlin.plugin.compose\")".to_string());
                 }
                 format!("plugins {{\n{}\n}}", plugins.join("\n"))
             } else if is_android_lib {
                 let mut plugins = vec!["    id(\"com.android.library\")".to_string()];
-                if is_agp_9_plus {
-                    if has_compose {
-                        plugins.push("    id(\"org.jetbrains.kotlin.plugin.compose\")".to_string());
-                    }
-                } else if is_kotlin {
+                if !is_agp_9_plus && is_kotlin {
                     plugins.push("    kotlin(\"android\")".to_string());
                 }
+                if has_compose && is_kotlin_2_plus {
+                    plugins.push("    id(\"org.jetbrains.kotlin.plugin.compose\")".to_string());
+                }
                 format!("plugins {{\n{}\n}}", plugins.join("\n"))
+            } else if is_kotlin && is_binary {
+                let compose_plugin = if has_compose && is_kotlin_2_plus { "\n    id(\"org.jetbrains.kotlin.plugin.compose\")" } else { "" };
+                format!("plugins {{\n    application\n    `java-library`\n    kotlin(\"jvm\") version \"{}\"{compose_plugin}\n}}", self.config.kotlin_version)
             } else if is_kotlin {
-                format!("plugins {{\n    `java-library`\n    kotlin(\"jvm\") version \"{}\"\n}}", self.config.kotlin_version)
+                let compose_plugin = if has_compose && is_kotlin_2_plus { "\n    id(\"org.jetbrains.kotlin.plugin.compose\")" } else { "" };
+                format!("plugins {{\n    `java-library`\n    kotlin(\"jvm\") version \"{}\"{compose_plugin}\n}}", self.config.kotlin_version)
             } else if is_binary {
                 "plugins {\n    application\n    `java-library`\n}".to_string()
             } else {
@@ -524,11 +528,17 @@ rootProject.name = "bazel-gradle-view"
                     .unwrap_or_else(|| base_ns.clone());
 
                 let compile_sdk = self.config.compile_sdk;
-                let min_sdk = self.config.min_sdk;
-                let target_sdk = self.config.target_sdk;
+                let min_sdk = rule
+                    .and_then(|r| r.manifest_values.get("minSdkVersion"))
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .unwrap_or(self.config.min_sdk);
+                let target_sdk = rule
+                    .and_then(|r| r.manifest_values.get("targetSdkVersion"))
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .unwrap_or(self.config.target_sdk);
 
                 let compose_block = if has_compose {
-                    if is_agp_9_plus {
+                    if is_kotlin_2_plus {
                         "    buildFeatures {\n        compose = true\n    }\n".to_string()
                     } else {
                         let compose_compiler_ver = self.config.compose_compiler_version.as_deref().unwrap_or("1.5.8");
@@ -654,6 +664,11 @@ sourceSets {{
 }}
 "#
                 )?;
+                if let Some(main_class) = rule.and_then(|r| r.main_class.as_deref()) {
+                    if is_binary {
+                        writeln!(file, "application {{\n    mainClass.set(\"{main_class}\")\n}}\n")?;
+                    }
+                }
             }
 
             // 3. Boundary tasks
@@ -697,6 +712,11 @@ sourceSets {{
                         let canonical_target = dep.canonical();
                         let dep_pkg = dep.package_dir();
                         let dep_target_name = &dep.target_name;
+                        let android_runtime_filter = if is_android {
+                            "entry.name.startsWith(\"com/jetbrains/JBR\") || entry.name == \"org/jetbrains/skiko/DependsOnJBR.class\""
+                        } else {
+                            "false"
+                        };
                         let task_var = format!("buildBazel_{sanitized_boundary}");
                         boundary_task_names.push((sanitized_boundary.clone(), task_var.clone()));
 
@@ -704,7 +724,7 @@ sourceSets {{
                             file,
                             r#"val {task_var} by tasks.registering(Exec::class) {{
     workingDir = file("{ws_root_str}")
-    commandLine("sh", "-c", "bazel query{bzlmod_flag} 'deps({canonical_target})' --noshow_progress 2>/dev/null | grep -E '^(@|//)' | xargs bazel build{bzlmod_flag} 2>/dev/null || bazel build{bzlmod_flag} {canonical_target}")
+    commandLine("sh", "-c", "bazel build{bzlmod_flag} {canonical_target}")
     outputs.file(layout.buildDirectory.file("bazel-outputs/{sanitized_boundary}.jar"))
     doLast {{
         val outDir = layout.buildDirectory.dir("bazel-outputs").get().asFile
@@ -713,8 +733,8 @@ sourceSets {{
         val jarsToMerge = mutableListOf<File>()
 
         try {{
-            val cqueryExpr = "'\\n'.join([f.path for p in (providers(target).values() if providers(target) else []) if hasattr(p, 'compile_jars') for f in (p.compile_jars.to_list() if hasattr(p.compile_jars, 'to_list') else p.compile_jars)] + [f.path for f in getattr(getattr(target, 'files', None), 'to_list', lambda: [])()])"
-            val proc = ProcessBuilder("bazel", "cquery"{bzlmod_arg}, "deps({canonical_target})", "--output=starlark", "--starlark:expr=$cqueryExpr", "--noshow_progress")
+            val cqueryExpr = "'\\n'.join([f.path for p in (providers(target).values() if providers(target) else []) if hasattr(p, 'transitive_runtime_jars') for f in (p.transitive_runtime_jars.to_list() if hasattr(p.transitive_runtime_jars, 'to_list') else p.transitive_runtime_jars)] + [f.path for p in (providers(target).values() if providers(target) else []) if hasattr(p, 'compile_jars') for f in (p.compile_jars.to_list() if hasattr(p.compile_jars, 'to_list') else p.compile_jars)])"
+            val proc = ProcessBuilder("bazel", "cquery"{bzlmod_arg}, "{canonical_target}", "--output=starlark", "--starlark:expr=$cqueryExpr", "--noshow_progress")
                 .directory(workingDir)
                 .redirectError(ProcessBuilder.Redirect.DISCARD)
                 .start()
@@ -734,7 +754,7 @@ sourceSets {{
         }}
 
         try {{
-            val proc = ProcessBuilder("bazel", "cquery"{bzlmod_arg}, "deps({canonical_target})", "--output=files", "--noshow_progress")
+            val proc = ProcessBuilder("bazel", "cquery"{bzlmod_arg}, "{canonical_target}", "--output=files", "--noshow_progress")
                 .directory(workingDir)
                 .redirectError(ProcessBuilder.Redirect.DISCARD)
                 .start()
@@ -774,7 +794,7 @@ sourceSets {{
                 try {{
                     ZipFile(jar).use {{ zf ->
                         for (entry in zf.entries()) {{
-                            if (entry.isDirectory || (entry.name.startsWith("META-INF/") && !entry.name.startsWith("META-INF/services/"))) continue
+                            if (entry.isDirectory || ({android_runtime_filter}) || entry.name.startsWith("kotlin/") || entry.name.startsWith("org/jetbrains/annotations/") || entry.name.startsWith("org/intellij/lang/annotations/") || (entry.name.startsWith("META-INF/") && !entry.name.startsWith("META-INF/services/") && !entry.name.endsWith(".kotlin_module"))) continue
                             if (seenEntries.add(entry.name)) {{
                                 out.putNextEntry(ZipEntry(entry.name))
                                 zf.getInputStream(entry).copyTo(out)
@@ -831,21 +851,14 @@ sourceSets {{
                         }
                     }
                 }
-                for (sanitized_boundary, _) in &boundary_task_names {
+                for (sanitized_boundary, task_var) in &boundary_task_names {
                     writeln!(
                         file,
-                        "    implementation(files(layout.buildDirectory.file(\"bazel-outputs/{sanitized_boundary}.jar\")))"
+                        "    implementation(files(layout.buildDirectory.file(\"bazel-outputs/{sanitized_boundary}.jar\")).builtBy({task_var}))"
                     )?;
                 }
             }
             writeln!(file, "}}\n")?;
-
-            for (_, task_var) in &boundary_task_names {
-                writeln!(
-                    file,
-                    "tasks.matching {{ it.name.contains(\"compile\") || it.name.contains(\"Compile\") || it.name.contains(\"Resources\") || it.name.contains(\"Manifest\") }}.configureEach {{\n    dependsOn({task_var})\n}}\n"
-                )?;
-            }
         }
 
         Ok(())
@@ -967,6 +980,14 @@ mod tests {
         .unwrap();
         assert!(pkg_a_build_rel.contains("srcDirs(listOf(file("));
         assert!(pkg_a_build_rel.contains("workingDir = file("));
+        assert!(pkg_a_build_rel.contains("transitive_runtime_jars"));
+        assert!(pkg_a_build_rel.contains("entry.name.startsWith(\"kotlin/\")"));
+        assert!(pkg_a_build_rel.contains("org/jetbrains/annotations/"));
+        assert!(pkg_a_build_rel.contains("org/intellij/lang/annotations/"));
+        assert!(pkg_a_build_rel.contains("entry.name.endsWith(\".kotlin_module\")"));
+        let boundary_name = boundary.sanitized_name();
+        assert!(pkg_a_build_rel.contains(&format!("implementation(files(layout.buildDirectory.file(\"bazel-outputs/{boundary_name}.jar\")).builtBy(buildBazel_{boundary_name}))")));
+        assert!(!pkg_a_build_rel.contains("deps(//java/com/example/boundary:boundary)"));
         assert!(!pkg_a_build_rel.contains(&ws_dir.path().to_string_lossy().to_string()));
 
         // 2. Absolute generation
@@ -1016,6 +1037,92 @@ mod tests {
         assert!(out_dir.path().join("gradlew").exists());
         assert!(out_dir.path().join("gradlew.bat").exists());
         assert!(out_dir.path().join("gradle/wrapper/gradle-wrapper.jar").exists());
+    }
+
+    #[test]
+    fn kotlin_jvm_binary_generates_application_and_compose_plugins() {
+        let ws_dir = tempdir().unwrap();
+        let out_dir = tempdir().unwrap();
+        let label = TargetLabel::parse("//desktop:desktop_app");
+        let mut target_rules = HashMap::new();
+        target_rules.insert(label.clone(), TargetRule {
+            label: label.clone(),
+            kind: RuleKind::KotlinJvmBinary,
+            srcs: vec!["src/main/kotlin/Main.kt".into()],
+            deps: vec![], runtime_deps: vec![], exports: vec![], resources: vec![], javacopts: vec![],
+            main_class: Some("com.example.MainKt".into()), manifest: None, custom_package: None,
+            resource_files: vec![], manifest_values: HashMap::new(),
+            plugins: vec![TargetLabel::parse("//shared:compose_compiler_plugin")],
+        });
+        let sliced = SlicedView { modules: HashSet::from([label]), boundary_targets: HashSet::new(), target_rules };
+        let mut generator = GradleGenerator::new(out_dir.path().into(), ws_dir.path().into(), PathBuf::new(), false, None);
+        generator.config.kotlin_version = "2.3.21".into();
+        generator.generate(&sliced).unwrap();
+
+        let build = fs::read_to_string(out_dir.path().join("desktop/desktop_app/build.gradle.kts")).unwrap();
+        assert!(build.contains("application\n    `java-library`"));
+        assert!(build.contains("kotlin(\"jvm\") version \"2.3.21\""));
+        assert!(build.contains("id(\"org.jetbrains.kotlin.plugin.compose\")"));
+        assert!(build.contains("mainClass.set(\"com.example.MainKt\")"));
+        let root = fs::read_to_string(out_dir.path().join("build.gradle.kts")).unwrap();
+        assert!(root.contains("org.jetbrains.kotlin.plugin.compose\") version \"2.3.21\""));
+    }
+
+    #[test]
+    fn android_compose_plugin_tracks_kotlin_version_under_agp8() {
+        let make_sliced = || {
+            let label = TargetLabel::parse("//android:android_lib");
+            let boundary = TargetLabel::parse("//shared:libb");
+            let rule = TargetRule {
+                label: label.clone(),
+                kind: RuleKind::KotlinAndroidLibrary,
+                srcs: vec!["src/main/kotlin/Screen.kt".into()],
+                deps: vec![boundary.clone()], runtime_deps: vec![], exports: vec![], resources: vec![], javacopts: vec![],
+                main_class: None, manifest: None, custom_package: None, resource_files: vec![],
+                manifest_values: HashMap::from([
+                    ("minSdkVersion".into(), "24".into()),
+                    ("targetSdkVersion".into(), "34".into()),
+                ]),
+                plugins: vec![TargetLabel::parse("//shared:compose_compiler_plugin")],
+            };
+            SlicedView {
+                modules: HashSet::from([label.clone()]),
+                boundary_targets: HashSet::from([boundary]),
+                target_rules: HashMap::from([(label, rule)]),
+            }
+        };
+
+        let ws_dir = tempdir().unwrap();
+        let out_dir = tempdir().unwrap();
+        let mut generator = GradleGenerator::new(out_dir.path().into(), ws_dir.path().into(), PathBuf::new(), false, None);
+        generator.config.agp_version = "8.2.2".into();
+        generator.config.kotlin_version = "2.3.21".into();
+        generator.generate(&make_sliced()).unwrap();
+
+        let build = fs::read_to_string(out_dir.path().join("android/android_lib/build.gradle.kts")).unwrap();
+        assert!(build.contains("kotlin(\"android\")"));
+        assert!(build.contains("id(\"org.jetbrains.kotlin.plugin.compose\")"));
+        assert!(build.contains("buildFeatures {\n        compose = true"));
+        assert!(!build.contains("kotlinCompilerExtensionVersion"));
+        assert!(build.contains("entry.name.startsWith(\"com/jetbrains/JBR\")"));
+        assert!(build.contains("entry.name == \"org/jetbrains/skiko/DependsOnJBR.class\""));
+        assert!(build.contains("minSdk = 24"));
+        let root = fs::read_to_string(out_dir.path().join("build.gradle.kts")).unwrap();
+        assert!(root.contains("org.jetbrains.kotlin.plugin.compose\") version \"2.3.21\""));
+
+        let legacy_out = tempdir().unwrap();
+        let mut legacy = GradleGenerator::new(legacy_out.path().into(), ws_dir.path().into(), PathBuf::new(), false, None);
+        legacy.config.agp_version = "8.2.2".into();
+        legacy.config.kotlin_version = "1.9.25".into();
+        legacy.config.compose_compiler_version = Some("1.5.8".into());
+        legacy.generate(&make_sliced()).unwrap();
+
+        let legacy_build = fs::read_to_string(legacy_out.path().join("android/android_lib/build.gradle.kts")).unwrap();
+        assert!(legacy_build.contains("kotlin(\"android\")"));
+        assert!(!legacy_build.contains("id(\"org.jetbrains.kotlin.plugin.compose\")"));
+        assert!(legacy_build.contains("kotlinCompilerExtensionVersion = \"1.5.8\""));
+        let legacy_root = fs::read_to_string(legacy_out.path().join("build.gradle.kts")).unwrap();
+        assert!(!legacy_root.contains("org.jetbrains.kotlin.plugin.compose"));
     }
 }
 
